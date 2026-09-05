@@ -66,7 +66,7 @@ Each of these cost a build cycle:
   turns the latter into a 171 and the real cause is lost.
 - **Never hand-write a valhalla config.** `worker_t` reads keys with `ptree.get<T>()` and no
   defaults, so a missing one throws `ptree_bad_path`. Generate it with
-  `scripts/valhalla_build_config` and override only what you need — that is what
+  `<repo>/scripts/valhalla_build_config` and override only what you need — that is what
   `test/bindings/wasm/valhalla.json` is.
 - **Formatting needs clang-format-11 exactly.** Newer versions produce different output.
 - **Do not name a variable `EMSDK_*`.** `emsdk construct_env` emits `unset` for every `EMSDK_`
