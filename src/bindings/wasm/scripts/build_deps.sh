@@ -5,7 +5,7 @@ set -o errexit -o pipefail -o nounset
 source "$(dirname "$0")/env.sh"
 cd "${WASM_BUILD_ROOT}"
 
-echo "### emcc: $(emcc --version | head -1)"
+echo "### emcc: $(emcc --version | sed -n 1p)"
 
 # ---- protoc --------------------------------------------------------------
 # Downloaded rather than taken from the system, so it cannot drift from the wasm runtime:

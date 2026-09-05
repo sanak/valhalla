@@ -30,7 +30,7 @@ if [ ! -f "${WASM_EMSDK}/emsdk_env.sh" ]; then
   EMSDK_PYTHON="$(command -v python3)" "${WASM_EMSDK}/emsdk" activate "${EMSDK_VERSION}"
 fi
 
-. "${WASM_EMSDK}/emsdk_env.sh" > /dev/null 2>&1
+. "${WASM_EMSDK}/emsdk_env.sh" > /dev/null 2>&1 || :
 if ! command -v emcc > /dev/null; then
   echo "env.sh: ${WASM_EMSDK}/emsdk_env.sh did not put emcc on PATH; run './emsdk activate'" >&2
   return 1 2>/dev/null || exit 1
@@ -41,7 +41,7 @@ set -a
 . "${_wasm_dir}/versions.env"
 set +a
 
-_have="$(tr -d '"' < "${WASM_EMSDK}/upstream/emscripten/emscripten-version.txt" 2>/dev/null)"
+_have="$(tr -d '"' < "${WASM_EMSDK}/upstream/emscripten/emscripten-version.txt" 2>/dev/null || true)"
 if [ "${_have}" != "${EMSDK_VERSION}" ]; then
   echo "env.sh: warning: emscripten ${_have} active, versions.env pins ${EMSDK_VERSION}" >&2
 fi
