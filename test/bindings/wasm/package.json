@@ -1,0 +1,9 @@
+{
+  "name": "@valhalla/wasm-tests",
+  "private": true,
+  "description": "Test-only dependencies for the Valhalla WebAssembly bindings",
+  "type": "module",
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}
