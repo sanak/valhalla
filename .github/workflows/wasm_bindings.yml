@@ -1,0 +1,134 @@
+name: Build WASM bindings
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - '*'
+  # on PRs only when the bindings, their tests, the actor API or any CMakeLists change
+  pull_request:
+    paths:
+      - "src/bindings/wasm/**"
+      - "test/bindings/wasm/**"
+      - valhalla/tyr/actor.h
+      - "**/CMakeLists.txt"
+    branches:
+      - master
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_tiles:
+    name: Build test tiles
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_DIR: .ccache
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Setup ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-wasm-tiles-${{ github.sha }}
+          restore-keys: ccache-wasm-tiles-
+
+      - name: Install dependencies
+        run: |
+          sudo ./scripts/install-linux-deps.sh
+          sudo apt-get install -y ninja-build
+
+      - name: Build tiles
+        run: ./src/bindings/wasm/scripts/make_tiles.sh
+
+      - name: Tar tiles
+        run: tar -cf wasm-tiles.tar -C build-wasm tiles
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-tiles
+          path: wasm-tiles.tar
+
+  build_wasm:
+    name: Cross-build the wasm module
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      # keyed on versions.env, so bumping a pinned version invalidates the cache and a stale
+      # protobuf can never survive into a new build
+      - name: Cache toolchain and cross-built deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            build-wasm/emsdk
+            build-wasm/protoc
+            build-wasm/protobuf
+            build-wasm/zlib
+            build-wasm/prefix
+          key: wasm-deps-${{ runner.os }}-${{ hashFiles('src/bindings/wasm/versions.env') }}
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libboost-dev python3-venv unzip
+
+      - name: Build deps
+        run: ./src/bindings/wasm/scripts/build_deps.sh
+
+      - name: Build wasm module
+        run: ./src/bindings/wasm/scripts/build.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-module
+          path: |
+            build-wasm/build-valhalla/src/bindings/wasm/valhalla.mjs
+            build-wasm/build-valhalla/src/bindings/wasm/valhalla.wasm
+
+  test_wasm:
+    name: Test the wasm bindings
+    runs-on: ubuntu-latest
+    needs: [build_tiles, build_wasm]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm-tiles
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm-module
+          path: wasm-module
+
+      - name: Unpack tiles
+        run: tar -xf wasm-tiles.tar
+
+      - name: Install test dependencies
+        working-directory: test/bindings/wasm
+        run: |
+          npm install --no-package-lock
+          npx playwright install --with-deps chromium
+
+      - name: Node smoke test
+        env:
+          VALHALLA_WASM: ${{ github.workspace }}/wasm-module/valhalla.mjs
+          VALHALLA_TILE_DIR: ${{ github.workspace }}/tiles
+        run: node test/bindings/wasm/tests.mjs
+
+      - name: Browser test
+        working-directory: test/bindings/wasm
+        env:
+          VALHALLA_WASM_DIR: ${{ github.workspace }}/wasm-module
+          VALHALLA_TILE_DIR: ${{ github.workspace }}/tiles
+        run: node browser/test_browser.mjs
