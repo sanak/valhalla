@@ -18,7 +18,7 @@ fi
 
 # odin's locales step (src/odin/CMakeLists.txt) imports polib and runs even for a
 # routing-only build. A Homebrew python refuses `pip install` under PEP 668, so use a venv.
-if [ ! -x "${WASM_PYTHON}" ]; then
+if ! "${WASM_PYTHON}" -c 'import polib' 2> /dev/null; then
   echo "### creating polib venv at ${WASM_BUILD_ROOT}/venv-polib"
   python3 -m venv "${WASM_BUILD_ROOT}/venv-polib"
   "${WASM_BUILD_ROOT}/venv-polib/bin/pip" install --quiet polib
