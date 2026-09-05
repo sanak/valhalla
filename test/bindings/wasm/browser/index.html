@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>valhalla wasm browser test</title>
+<script type="module">
+  import { Valhalla } from './index.mjs';
+  window.run = async (config, cacheDir) => {
+    const v = await Valhalla.create({ workerUrl: './worker.js', config, cacheDir });
+    const route = JSON.parse(
+      await v.route(
+        JSON.stringify({
+          locations: [
+            { lat: 47.141, lon: 9.521 },
+            { lat: 47.165, lon: 9.51 },
+          ],
+          costing: 'auto',
+        }),
+      ),
+    );
+    v.terminate();
+    return route.trip.summary;
+  };
+  // a worker script that 404s never posts back, so create() has to reject on the error event
+  window.badWorker = async () => {
+    try {
+      await Valhalla.create({ workerUrl: './missing-worker.js', config: {}, cacheDir: null });
+      return 'resolved';
+    } catch (e) {
+      return e.name;
+    }
+  };
+  window.ready = true;
+</script>
