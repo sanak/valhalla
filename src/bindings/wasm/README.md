@@ -32,7 +32,7 @@ Already have a native valhalla build? Skip the one `make_tiles.sh` would do:
 
 Already have an Emscripten SDK? Point at it instead of installing a second copy:
 
-    export WASM_EMSDK=$HOME/Build/wasm/emsdk
+    export WASM_EMSDK=/path/to/emsdk
 
 ## Test
 
@@ -61,7 +61,8 @@ Each of these cost a build cycle:
 - **Every object needs `-fwasm-exceptions`**, protobuf and abseil included, or the link fails.
 - **`loki.use_connectivity` must be off in tar mode.** `GraphReader::GetTileSet()` cannot
   enumerate a remote tar, so the connectivity map comes out empty and loki rejects every route
-  with a 170. `index.mjs` forces it off; `valhalla_build_config` always emits it as `true`.
+  with a 170. The `Actor` constructor in `src/valhalla_wasm.cc` forces it off; `valhalla_build_config`
+  always emits it as `true`.
 - **Throw `valhalla_exception_t` from a tile getter, never a bare `std::exception`.** Loki
   turns the latter into a 171 and the real cause is lost.
 - **Never hand-write a valhalla config.** `worker_t` reads keys with `ptree.get<T>()` and no

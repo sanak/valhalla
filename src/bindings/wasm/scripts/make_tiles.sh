@@ -13,8 +13,8 @@ if [ -n "${VALHALLA_BUILD_TILES:-}" ]; then
   BUILDER="${VALHALLA_BUILD_TILES}"
 else
   # A minimal native build: data tools only, and only the one target we need. No admin or
-  # timezone database is built -- the smoke route does not need them, and skipping them keeps
-  # spatialite out of the dependency set.
+  # timezone database is built -- the smoke route needs neither, and skipping them keeps
+  # the tileset deterministic.
   NATIVE_DIR="${WASM_BUILD_ROOT}/build-native"
   BUILDER="${NATIVE_DIR}/valhalla_build_tiles"
   if [ ! -x "${BUILDER}" ]; then
