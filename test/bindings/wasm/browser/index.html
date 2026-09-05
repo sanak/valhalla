@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>valhalla wasm browser test</title>
+<script type="module">
+  import { Valhalla } from './index.mjs';
+  window.run = async (config, cacheDir) => {
+    const v = await Valhalla.create({ workerUrl: './worker.js', config, cacheDir });
+    const route = JSON.parse(
+      await v.route(
+        JSON.stringify({
+          locations: [
+            { lat: 47.141, lon: 9.521 },
+            { lat: 47.165, lon: 9.51 },
+          ],
+          costing: 'auto',
+        }),
+      ),
+    );
+    v.terminate();
+    return route.trip.summary;
+  };
+  window.ready = true;
+</script>
