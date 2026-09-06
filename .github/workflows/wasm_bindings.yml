@@ -8,13 +8,20 @@ on:
       - '*'
   # on PRs only when the bindings, their tests, the interfaces they implement or any
   # CMakeLists change. tilegetter.h is here because js_tile_getter_t overrides its pure
-  # virtuals, so a new one breaks the wasm build and nothing else.
+  # virtuals, so a new one breaks the wasm build and nothing else. exceptions.h and the
+  # dijkstras pair are here because the wasm suite cancels an isochrone, the one cancellation
+  # path it can detect a regression in. The shape-match fallback guards in
+  # trace_route_action.cc and triplegbuilder.cc are deliberately absent: nothing here
+  # exercises them.
   pull_request:
     paths:
       - "src/bindings/wasm/**"
       - "test/bindings/wasm/**"
       - valhalla/tyr/actor.h
       - valhalla/baldr/tilegetter.h
+      - valhalla/exceptions.h
+      - valhalla/thor/dijkstras.h
+      - src/thor/dijkstras.cc
       - "**/CMakeLists.txt"
       - .github/workflows/wasm_bindings.yml
     branches:
