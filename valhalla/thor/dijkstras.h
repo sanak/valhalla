@@ -85,6 +85,10 @@ public:
     expansion_callback_ = expansion_callback;
   }
 
+  void set_interrupt(const std::function<void()>* interrupt) {
+    interrupt_ = interrupt;
+  }
+
 protected:
   /**
    * Compute the best first graph traversal from a list of origin locations
@@ -175,12 +179,6 @@ protected:
   // called periodically during expansion; throws when the caller wants to abort
   const std::function<void()>* interrupt_ = nullptr;
 
-public:
-  void set_interrupt(const std::function<void()>* interrupt) {
-    interrupt_ = interrupt;
-  }
-
-protected:
   /**
    * Initialization prior to computing the graph expansion
    *

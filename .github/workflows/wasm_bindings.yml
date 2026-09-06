@@ -11,8 +11,8 @@ on:
   # virtuals, so a new one breaks the wasm build and nothing else. exceptions.h and the
   # dijkstras pair are here because the wasm suite cancels an isochrone, the one cancellation
   # path it can detect a regression in. The shape-match fallback guards in
-  # trace_route_action.cc and triplegbuilder.cc are deliberately absent: nothing here
-  # exercises them.
+  # trace_route_action.cc, trace_attributes_action.cc and triplegbuilder.cc are deliberately
+  # absent: nothing here exercises them.
   pull_request:
     paths:
       - "src/bindings/wasm/**"
@@ -22,6 +22,7 @@ on:
       - valhalla/exceptions.h
       - valhalla/thor/dijkstras.h
       - src/thor/dijkstras.cc
+      - src/thor/isochrone_action.cc
       - "**/CMakeLists.txt"
       - .github/workflows/wasm_bindings.yml
     branches:

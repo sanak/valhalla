@@ -100,8 +100,7 @@ console.log(`in-flight abort works in ${inflight.ms.toFixed(1)}ms` +
 // the worker is interrupted in place instead of being torn down and respawned
 const isolatedServer = await serve(root, 0, { crossOriginIsolated: true });
 const isolatedOrigin = `http://127.0.0.1:${isolatedServer.address().port}`;
-const isolatedConfig = JSON.parse(readFileSync(join(here, '../valhalla.json'), 'utf8'));
-delete isolatedConfig.mjolnir.tile_dir;
+const isolatedConfig = structuredClone(config);
 // COEP blocks a cross-origin tar fetch, so the isolated page must pull tiles from its own origin
 isolatedConfig.mjolnir.tile_url = `${isolatedOrigin}/tiles.tar`;
 

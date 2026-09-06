@@ -53,6 +53,7 @@
       name = e.name;
     }
     const firstOk = await slow.then(() => true).catch(() => false);
+    v.terminate();
     return { name, firstOk };
   };
   window.abortInflight = async (config) => {
@@ -78,6 +79,7 @@
       (r) => JSON.parse(r).trip.summary.length > 0,
       () => false,
     );
+    v.terminate();
     return { name, ms, after, isolated: self.crossOriginIsolated === true };
   };
   window.ready = true;

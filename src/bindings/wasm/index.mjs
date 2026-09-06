@@ -101,7 +101,8 @@ export class Valhalla {
     fn();
   }
 
-  #send(action, payload, { signal } = {}) {
+  #send(action, payload, options) {
+    const signal = options?.signal;
     if (this.#dead) {
       return Promise.reject(new ValhallaError({ message: this.#dead }));
     }

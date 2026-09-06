@@ -62,7 +62,7 @@ directly.
 Aborting the in-flight call is cooperative when possible. If a `SharedArrayBuffer` could be
 allocated, the main thread flips a flag in shared memory that the wasm module polls from
 inside valhalla's expansion loops, so the pathfinder unwinds and the worker survives with its
-warm tile cache. Getting a `SharedArrayBuffer` in a browser requires the page be served with
+warm tile cache. Getting a `SharedArrayBuffer` in a browser requires the page to be served with
 `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`.
 
 **`require-corp` has a consequence beyond this binding: every cross-origin subresource the
