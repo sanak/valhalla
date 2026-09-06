@@ -7,6 +7,7 @@
 #include "baldr/signinfo.h"
 #include "baldr/time_info.h"
 #include "baldr/timedomain.h"
+#include "exceptions.h"
 #include "midgard/elevation_encoding.h"
 #include "midgard/encoded.h"
 #include "midgard/logging.h"
@@ -1783,7 +1784,9 @@ void AccumulateRecostingInfoForward(const valhalla::Options& options,
       out_itr->mutable_recosts()->rbegin()->mutable_transition_cost()->set_seconds(0);
       out_itr->mutable_recosts()->rbegin()->mutable_transition_cost()->set_cost(0);
     } // couldnt be recosted (difference in access for example) so we fill it with nulls to show this
-    catch (...) {
+    catch (const interrupt_exception_t&) {
+      throw;
+    } catch (...) {
       int should_have = leg.node(0).recosts_size();
       for (auto& node : *leg.mutable_node()) {
         if (node.recosts_size() == should_have) {

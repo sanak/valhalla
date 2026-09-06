@@ -1,5 +1,6 @@
 #include "tyr/actor.h"
 #include "test.h"
+#include "valhalla/exceptions.h"
 
 #include <boost/property_tree/ptree.hpp>
 #include <vtzero/vector_tile.hpp>
@@ -96,6 +97,14 @@ TEST(Actor, CentroidInterrupt) {
   // TripLegBuilder has its own interrupt check, but it only runs after a route has been
   // added, so an abort from inside the expansion is the only one that leaves none
   EXPECT_EQ(api.trip().routes_size(), 0);
+}
+
+TEST(Actor, TraceRouteInterruptIsNotSwallowed) {
+  tyr::actor_t actor(conf);
+  std::string request = R"({"shape":[{"lat":40.546115,"lon":-76.385076},
+        {"lat":40.544232,"lon":-76.385752}],"costing":"auto","shape_match":"walk_or_snap"})";
+  std::function<void()> interrupt = [] { throw interrupt_exception_t{}; };
+  EXPECT_THROW(actor.trace_route(request, &interrupt), interrupt_exception_t);
 }
 
 TEST(Actor, Tile) {
