@@ -73,8 +73,7 @@ function clearCache(dir) {
   }
 }
 
-self.onmessage = async ({ data }) => {
-  const { id, action, payload } = data;
+async function handle({ id, action, payload }) {
   try {
     if (action === 'init') {
       await init(payload);
@@ -101,4 +100,12 @@ self.onmessage = async ({ data }) => {
   } catch (e) {
     self.postMessage({ id, ok: false, error: serializeError(e) });
   }
+}
+
+// Module and actor are worker globals that init() and the 446 recovery both replace, so two
+// actions overlapping across an await would see a deleted actor or a half-mounted FS
+let queue = Promise.resolve();
+
+self.onmessage = ({ data }) => {
+  queue = queue.then(() => handle(data));
 };
