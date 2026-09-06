@@ -10,18 +10,20 @@ export class ValhallaError extends Error {
 
 export class Valhalla {
   #worker;
-  #pending = new Map();
-  #nextId = 0;
+  #inflight = null;
+  #queued = [];
+  #nextId = 1;
   #dead = null;
 
   constructor(worker) {
     this.#worker = worker;
     worker.onmessage = ({ data }) => {
-      const settle = this.#pending.get(data.id);
-      if (!settle) return;
-      this.#pending.delete(data.id);
+      const settle = this.#inflight;
+      if (!settle || settle.id !== data.id) return;
+      this.#inflight = null;
       // structured clone drops the prototype, so the error is rebuilt here
       data.ok ? settle.resolve(data.result) : settle.reject(new ValhallaError(data.error));
+      this.#pump();
     };
     // a worker that fails to load or throws at top level never posts back, so without this
     // every pending call - create() included - would hang instead of reporting the failure
@@ -31,10 +33,12 @@ export class Valhalla {
 
   #kill(message) {
     this.#dead ??= message;
-    for (const { reject } of this.#pending.values()) {
+    const doomed = this.#inflight ? [this.#inflight, ...this.#queued] : this.#queued;
+    this.#inflight = null;
+    this.#queued = [];
+    for (const { reject } of doomed) {
       reject(new ValhallaError({ message }));
     }
-    this.#pending.clear();
   }
 
   #send(action, payload) {
@@ -43,9 +47,18 @@ export class Valhalla {
     }
     const id = this.#nextId++;
     return new Promise((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
-      this.#worker.postMessage({ id, action, payload });
+      this.#queued.push({ id, action, payload, resolve, reject });
+      this.#pump();
     });
+  }
+
+  // one action at a time: the worker owns a single actor, and a queue the main thread holds
+  // is a queue it can still edit after the worker has stopped answering
+  #pump() {
+    if (this.#inflight || this.#queued.length === 0) return;
+    this.#inflight = this.#queued.shift();
+    const { id, action, payload } = this.#inflight;
+    this.#worker.postMessage({ id, action, payload });
   }
 
   static async create({ workerUrl, config, cacheDir = null }) {
