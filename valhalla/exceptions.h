@@ -38,6 +38,11 @@ struct valhalla_exception_t : public std::runtime_error {
   std::string statsd_key;
 };
 
+// thrown by a caller-supplied interrupt functor to abandon a request. Deliberately not
+// derived from std::exception: the fallback handlers in thor catch std::exception to
+// degrade gracefully, and an abandoned request must not be degraded, it must unwind.
+struct interrupt_exception_t {};
+
 /**
  * Adds a warning to the request PBF object.
  *

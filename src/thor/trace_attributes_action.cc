@@ -73,7 +73,7 @@ std::string thor_worker_t::trace_attributes(Api& request) {
       try {
         route_match(request);
         map_match_results.emplace_back(1.0f, 0.0f, std::vector<meili::MatchResult>{});
-      } catch (...) {
+      } catch (const interrupt_exception_t&) { throw; } catch (...) {
         LOG_WARN(ShapeMatch_Enum_Name(options.shape_match()) +
                  " algorithm failed to find exact route match; Falling back to map_match...");
         try {
