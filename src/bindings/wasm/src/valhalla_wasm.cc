@@ -22,6 +22,8 @@ EM_JS(void, throw_valhalla_error, (const char* message, int code, int http_code)
   err.name = 'ValhallaError';
   if (code) {
     err.code = code;
+  }
+  if (http_code) {
     err.httpCode = http_code;
   }
   throw err;
@@ -65,6 +67,8 @@ public:
         config_.put("loki.use_connectivity", false);
       }
       actor_ = std::make_unique<valhalla::tyr::actor_t>(config_, *reader_, true);
+    } catch (const valhalla::valhalla_exception_t& e) {
+      throw_valhalla_error(e.message.c_str(), e.code, e.http_code);
     } catch (const std::exception& e) { throw_valhalla_error(e.what(), 0, 0); }
   }
 
