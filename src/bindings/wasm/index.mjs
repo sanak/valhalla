@@ -4,6 +4,16 @@ function abortError() {
   return new DOMException('request cancelled', 'AbortError');
 }
 
+// Feature-detect rather than reading crossOriginIsolated: node has no such global but always
+// has SharedArrayBuffer, and a browser without cross-origin isolation has neither.
+function makeCancelFlag() {
+  try {
+    return new Int32Array(new SharedArrayBuffer(4));
+  } catch {
+    return null;
+  }
+}
+
 export class ValhallaError extends Error {
   constructor({ message, code, httpCode }) {
     super(message);
@@ -15,35 +25,73 @@ export class ValhallaError extends Error {
 
 export class Valhalla {
   #worker;
+  #workerUrl;
+  #initPayload = null;
   #inflight = null;
+  #pendingInit = null;
   #queued = [];
   #nextId = 1;
   #dead = null;
+  #restarting = false;
+  #abortTimeoutMs = 3000;
+  #flag = makeCancelFlag();
 
-  constructor(worker) {
-    this.#worker = worker;
-    worker.onmessage = ({ data }) => {
+  constructor(workerUrl) {
+    this.#workerUrl = workerUrl;
+    this.#spawn();
+  }
+
+  #spawn() {
+    this.#worker = new Worker(this.#workerUrl, { type: 'module' });
+    this.#worker.onmessage = ({ data }) => {
+      // init bypasses the queue so a respawn can unblock it, so it settles from its own slot
+      const boot = this.#pendingInit;
+      if (boot && boot.id === data.id) {
+        this.#pendingInit = null;
+        data.ok ? boot.resolve() : boot.reject(new ValhallaError(data.error));
+        return;
+      }
       const entry = this.#inflight;
       if (!entry || entry.id !== data.id) return;
       this.#inflight = null;
+      clearTimeout(entry.timer);
+      if ((entry.aborting || data.aborted) && this.#flag) Atomics.store(this.#flag, 0, 0);
       this.#settle(entry, () => {
-        // structured clone drops the prototype, so the error is rebuilt here
-        data.ok ? entry.resolve(data.result) : entry.reject(new ValhallaError(data.error));
+        // a result that beat the abort still rejects, so a cancelled call has one outcome
+        if (data.aborted || entry.aborting) {
+          entry.reject(abortError());
+        } else if (data.ok) {
+          entry.resolve(data.result);
+        } else {
+          // structured clone drops the prototype, so the error is rebuilt here
+          entry.reject(new ValhallaError(data.error));
+        }
       });
       this.#pump();
     };
     // a worker that fails to load or throws at top level never posts back, so without this
     // every pending call - create() included - would hang instead of reporting the failure
-    worker.onerror = (e) => this.#kill(e.message ?? 'worker failed to start');
-    worker.onmessageerror = () => this.#kill('worker sent an uncloneable message');
+    this.#worker.onerror = (e) => this.#kill(e.message ?? 'worker failed to start');
+    this.#worker.onmessageerror = () => this.#kill('worker sent an uncloneable message');
+  }
+
+  #init() {
+    return new Promise((resolve, reject) => {
+      const id = this.#nextId++;
+      this.#pendingInit = { id, resolve, reject };
+      this.#worker.postMessage({ id, action: 'init', payload: this.#initPayload });
+    });
   }
 
   #kill(message) {
     this.#dead ??= message;
-    const doomed = this.#inflight ? [this.#inflight, ...this.#queued] : this.#queued;
+    this.#restarting = false;
+    const doomed = [this.#pendingInit, this.#inflight, ...this.#queued].filter(Boolean);
+    this.#pendingInit = null;
     this.#inflight = null;
     this.#queued = [];
     for (const entry of doomed) {
+      clearTimeout(entry.timer);
       this.#settle(entry, () => entry.reject(new ValhallaError({ message })));
     }
   }
@@ -79,23 +127,55 @@ export class Valhalla {
       entry.reject(abortError());
       return;
     }
-    if (this.#inflight?.id !== id) return;
-    // Task 7 fills this in; until then an in-flight abort is a no-op
+    const entry = this.#inflight;
+    if (entry?.id !== id) return;
+    entry.aborting = true;
+    if (this.#flag) {
+      Atomics.store(this.#flag, 0, id);
+    }
+    // a synchronous XHR can outlast every interrupt check, so the flag gets a deadline
+    entry.timer = setTimeout(() => this.#respawn(), this.#flag ? this.#abortTimeoutMs : 0);
+  }
+
+  // the worker cannot be interrupted out of a synchronous fetch, so it is replaced wholesale
+  async #respawn() {
+    this.#restarting = true;
+    const aborted = this.#inflight;
+    this.#inflight = null;
+    this.#worker.terminate();
+    if (aborted) {
+      clearTimeout(aborted.timer);
+      this.#settle(aborted, () => aborted.reject(abortError()));
+    }
+    if (this.#flag) {
+      Atomics.store(this.#flag, 0, 0);
+    }
+    try {
+      this.#spawn();
+      await this.#init();
+    } catch (e) {
+      this.#restarting = false;
+      this.#kill(e.message ?? 'worker failed to restart');
+      return;
+    }
+    this.#restarting = false;
+    this.#pump();
   }
 
   // one action at a time: the worker owns a single actor, and a queue the main thread holds
   // is a queue it can still edit after the worker has stopped answering
   #pump() {
-    if (this.#inflight || this.#queued.length === 0) return;
+    if (this.#restarting || this.#inflight || this.#queued.length === 0) return;
     this.#inflight = this.#queued.shift();
     const { id, action, payload } = this.#inflight;
     this.#worker.postMessage({ id, action, payload });
   }
 
-  static async create({ workerUrl, config, cacheDir = null }) {
-    const worker = new Worker(workerUrl, { type: 'module' });
-    const instance = new Valhalla(worker);
-    await instance.#send('init', { config, cacheDir });
+  static async create({ workerUrl, config, cacheDir = null, abortTimeoutMs = 3000 }) {
+    const instance = new Valhalla(workerUrl);
+    instance.#abortTimeoutMs = abortTimeoutMs;
+    instance.#initPayload = { config, cacheDir, cancelFlag: instance.#flag };
+    await instance.#init();
     return instance;
   }
 

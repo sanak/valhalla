@@ -55,5 +55,28 @@
     const firstOk = await slow.then(() => true).catch(() => false);
     return { name, firstOk };
   };
+  window.abortInflight = async (config) => {
+    const v = await Valhalla.create({ workerUrl: './worker.js', config, cacheDir: null });
+    const ac = new AbortController();
+    const slow = v.isochrone(JSON.stringify(bigIsochroneRequest), { signal: ac.signal });
+    // the entry occupies the in-flight slot synchronously inside the send, so the abort takes
+    // the in-flight branch whatever the worker is doing - waiting longer only lets it finish
+    await new Promise((r) => setTimeout(r, 0));
+    const t0 = performance.now();
+    ac.abort();
+    let name = 'none';
+    try {
+      await slow;
+    } catch (e) {
+      name = e.name;
+    }
+    const ms = performance.now() - t0;
+    // the instance must survive: a later request has to work on the same object
+    const after = await v.route(JSON.stringify(routeRequest)).then(
+      (r) => JSON.parse(r).trip.summary.length > 0,
+      () => false,
+    );
+    return { name, ms, after, isolated: self.crossOriginIsolated === true };
+  };
   window.ready = true;
 </script>
