@@ -6,12 +6,15 @@ on:
       - master
     tags:
       - '*'
-  # on PRs only when the bindings, their tests, the actor API or any CMakeLists change
+  # on PRs only when the bindings, their tests, the interfaces they implement or any
+  # CMakeLists change. tilegetter.h is here because js_tile_getter_t overrides its pure
+  # virtuals, so a new one breaks the wasm build and nothing else.
   pull_request:
     paths:
       - "src/bindings/wasm/**"
       - "test/bindings/wasm/**"
       - valhalla/tyr/actor.h
+      - valhalla/baldr/tilegetter.h
       - "**/CMakeLists.txt"
       - .github/workflows/wasm_bindings.yml
     branches:
