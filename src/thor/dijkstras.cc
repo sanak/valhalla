@@ -323,7 +323,13 @@ void Dijkstras::Compute(google::protobuf::RepeatedPtrField<valhalla::Location>& 
 
   // Compute the isotile
   auto cb_decision = ExpansionRecommendation::continue_expansion;
+  uint32_t interrupt_n = 0;
   while (cb_decision != ExpansionRecommendation::stop_expansion) {
+    // Allow this process to be aborted
+    if (interrupt_ && (interrupt_n++ % kInterruptIterationsInterval) == 0) {
+      (*interrupt_)();
+    }
+
     // Get next element from adjacency list. Check that it is valid. An
     // invalid label indicates there are no edges that can be expanded.
     uint32_t predindex = adjacencylist_.pop();
@@ -714,7 +720,13 @@ void Dijkstras::ComputeMultiModal(
 
   // Expand using adjacency list until we exceed threshold
   auto cb_decision = ExpansionRecommendation::continue_expansion;
+  uint32_t interrupt_n = 0;
   while (cb_decision != ExpansionRecommendation::stop_expansion) {
+    // Allow this process to be aborted
+    if (interrupt_ && (interrupt_n++ % kInterruptIterationsInterval) == 0) {
+      (*interrupt_)();
+    }
+
     // Get next element from adjacency list. Check that it is valid. An
     // invalid label indicates there are no edges that can be expanded.
     const uint32_t predindex = mmadjacencylist_.pop();

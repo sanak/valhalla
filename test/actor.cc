@@ -78,6 +78,26 @@ TEST(Actor, TraceAttributes) {
   EXPECT_THROW(actor.trace_attributes(request, &interrupt), test_exception_t);
 }
 
+TEST(Actor, IsochroneInterrupt) {
+  tyr::actor_t actor(conf);
+  std::string request = R"({"locations":[{"lat":40.546115,"lon":-76.385076}],
+        "costing":"auto","contours":[{"time":5}]})";
+  std::function<void()> interrupt = [] { throw test_exception_t{}; };
+  EXPECT_THROW(actor.isochrone(request, &interrupt), test_exception_t);
+}
+
+TEST(Actor, CentroidInterrupt) {
+  tyr::actor_t actor(conf);
+  std::string request = R"({"locations":[{"lat":40.546115,"lon":-76.385076},
+        {"lat":40.544232,"lon":-76.385752}],"costing":"auto"})";
+  std::function<void()> interrupt = [] { throw test_exception_t{}; };
+  Api api;
+  EXPECT_THROW(actor.centroid(request, &interrupt, &api), test_exception_t);
+  // TripLegBuilder has its own interrupt check, but it only runs after a route has been
+  // added, so an abort from inside the expansion is the only one that leaves none
+  EXPECT_EQ(api.trip().routes_size(), 0);
+}
+
 TEST(Actor, Tile) {
   const auto utrecht_conf = test::make_config(VALHALLA_BUILD_DIR "test/data/utrecht_tiles");
   tyr::actor_t actor(utrecht_conf);
