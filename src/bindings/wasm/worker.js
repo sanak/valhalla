@@ -11,6 +11,7 @@ let Module = null;
 let actor = null;
 let cacheDir = null;
 let bootConfig = null;
+let cancelFlag = null;
 
 function syncFetch(url, offset, size) {
   const xhr = new XMLHttpRequest();
@@ -29,8 +30,10 @@ function syncFetch(url, offset, size) {
 async function init(payload) {
   bootConfig = payload.config;
   cacheDir = payload.cacheDir ?? null;
+  cancelFlag = payload.cancelFlag ?? null;
   Module = await createValhalla();
   Module.tileFetch = syncFetch;
+  Module.cancelFlag = payload.cancelFlag ?? undefined;
 
   const config = structuredClone(bootConfig);
   if (cacheDir) {
@@ -84,6 +87,7 @@ async function handle({ id, action, payload }) {
       throw new Error(`unknown action: ${action}`);
     }
     let result;
+    Module.currentRequestId = id;
     try {
       result = actor[action](payload);
     } catch (e) {
@@ -92,12 +96,19 @@ async function handle({ id, action, payload }) {
       actor.delete();
       clearCache(cacheDir);
       await flush();
-      await init({ config: bootConfig, cacheDir });
+      await init({ config: bootConfig, cacheDir, cancelFlag });
+      Module.currentRequestId = id;
       result = actor[action](payload);
+    } finally {
+      Module.currentRequestId = undefined;
     }
     await flush();
     self.postMessage({ id, ok: true, result });
   } catch (e) {
+    if (e.name === 'AbortError') {
+      self.postMessage({ id, ok: false, aborted: true });
+      return;
+    }
     self.postMessage({ id, ok: false, error: serializeError(e) });
   }
 }
