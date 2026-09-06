@@ -19,5 +19,14 @@
     v.terminate();
     return route.trip.summary;
   };
+  // a worker script that 404s never posts back, so create() has to reject on the error event
+  window.badWorker = async () => {
+    try {
+      await Valhalla.create({ workerUrl: './missing-worker.js', config: {}, cacheDir: null });
+      return 'resolved';
+    } catch (e) {
+      return e.name;
+    }
+  };
   window.ready = true;
 </script>

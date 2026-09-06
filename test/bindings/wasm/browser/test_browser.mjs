@@ -51,6 +51,18 @@ await page.evaluate((c) => window.run(c, '/cache'), config);
 assert(ranges.length < firstPass, `cache did not reduce range requests (${ranges.length} vs ${firstPass})`);
 console.log(`range requests: ${firstPass} cold, ${ranges.length} warm`);
 
+// a worker that cannot load must reject create(), not leave it pending forever
+let timer;
+const badWorker = await Promise.race([
+  page.evaluate(() => window.badWorker()),
+  new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('create() hung on an unloadable worker')), 15000);
+  }),
+]);
+clearTimeout(timer);
+assert.equal(badWorker, 'ValhallaError', `unloadable worker returned ${badWorker}`);
+console.log('an unloadable worker rejects instead of hanging');
+
 await browser.close();
 server.close();
 console.log('OK');

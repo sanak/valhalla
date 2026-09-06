@@ -12,6 +12,7 @@ export class Valhalla {
   #worker;
   #pending = new Map();
   #nextId = 0;
+  #dead = null;
 
   constructor(worker) {
     this.#worker = worker;
@@ -22,9 +23,24 @@ export class Valhalla {
       // structured clone drops the prototype, so the error is rebuilt here
       data.ok ? settle.resolve(data.result) : settle.reject(new ValhallaError(data.error));
     };
+    // a worker that fails to load or throws at top level never posts back, so without this
+    // every pending call - create() included - would hang instead of reporting the failure
+    worker.onerror = (e) => this.#kill(e.message ?? 'worker failed to start');
+    worker.onmessageerror = () => this.#kill('worker sent an uncloneable message');
+  }
+
+  #kill(message) {
+    this.#dead ??= message;
+    for (const { reject } of this.#pending.values()) {
+      reject(new ValhallaError({ message }));
+    }
+    this.#pending.clear();
   }
 
   #send(action, payload) {
+    if (this.#dead) {
+      return Promise.reject(new ValhallaError({ message: this.#dead }));
+    }
     const id = this.#nextId++;
     return new Promise((resolve, reject) => {
       this.#pending.set(id, { resolve, reject });
@@ -41,10 +57,7 @@ export class Valhalla {
 
   terminate() {
     this.#worker.terminate();
-    for (const { reject } of this.#pending.values()) {
-      reject(new ValhallaError({ message: 'worker terminated' }));
-    }
-    this.#pending.clear();
+    this.#kill('worker terminated');
   }
 
   route(request) { return this.#send('route', request); }
