@@ -68,15 +68,61 @@ assert.equal(queuedAbort.name, 'AbortError', `queued abort returned ${queuedAbor
 assert.equal(queuedAbort.firstOk, true, 'aborting a queued request killed the running one');
 console.log('aborting a queued request leaves the running one alone');
 
-const inflight = await page.evaluate((c) => window.abortInflight(c), config);
+// counts range requests made only after the 'valhalla-followup-start' marker, i.e. during the
+// follow-up route() call inside abortInflight - not the aborted isochrone that precedes it
+async function runAbortInflight(pg, cfg) {
+  const followupRanges = [];
+  let capturing = false;
+  const onRequest = (r) => {
+    if (capturing && r.headers()['range']) followupRanges.push(r.url());
+  };
+  const onConsole = (msg) => {
+    if (msg.text() === 'valhalla-followup-start') capturing = true;
+  };
+  pg.on('request', onRequest);
+  pg.on('console', onConsole);
+  const result = await pg.evaluate((c) => window.abortInflight(c), cfg);
+  pg.off('request', onRequest);
+  pg.off('console', onConsole);
+  return { ...result, followupRanges: followupRanges.length };
+}
+
+const inflight = await runAbortInflight(page, config);
 assert.equal(inflight.name, 'AbortError', `in-flight abort returned ${inflight.name}`);
 assert.equal(inflight.after, true, 'the instance was unusable after an in-flight abort');
 // the respawn settles the abort within a macrotask; without it the entry only settles when the
 // worker's own result arrives, which costs the whole request - measured at 0.3ms against 30ms
 assert(inflight.ms < 8, `in-flight abort took ${inflight.ms}ms - the worker result won`);
 console.log(`in-flight abort works in ${inflight.ms.toFixed(1)}ms` +
-  ` (crossOriginIsolated=${inflight.isolated})`);
+  ` (crossOriginIsolated=${inflight.isolated}, follow-up range requests=${inflight.followupRanges})`);
 
+// a cross-origin-isolated page has SharedArrayBuffer, so the abort takes the cooperative path:
+// the worker is interrupted in place instead of being torn down and respawned
+const isolatedServer = await serve(root, 0, { crossOriginIsolated: true });
+const isolatedOrigin = `http://127.0.0.1:${isolatedServer.address().port}`;
+const isolatedConfig = JSON.parse(readFileSync(join(here, '../valhalla.json'), 'utf8'));
+delete isolatedConfig.mjolnir.tile_dir;
+// COEP blocks a cross-origin tar fetch, so the isolated page must pull tiles from its own origin
+isolatedConfig.mjolnir.tile_url = `${isolatedOrigin}/tiles.tar`;
+
+const isolatedPage = await browser.newPage();
+await isolatedPage.goto(`${isolatedOrigin}/index.html`);
+await isolatedPage.waitForFunction(() => window.ready);
+
+const isolated = await runAbortInflight(isolatedPage, isolatedConfig);
+assert.equal(isolated.isolated, true, 'the isolated origin was not cross-origin isolated');
+assert.equal(isolated.name, 'AbortError', `isolated abort returned ${isolated.name}`);
+assert.equal(isolated.after, true, 'the instance was unusable after a cooperative abort');
+// after==true holds for a respawned worker too, so it can't tell the mechanisms apart; a
+// surviving worker still has the tiles the aborted isochrone fetched, a respawned one does not -
+// measured at 4 range requests against 9 on this fixture
+assert(isolated.followupRanges < inflight.followupRanges,
+  `cooperative worker did not avoid re-fetching tiles (${isolated.followupRanges} isolated vs ` +
+  `${inflight.followupRanges} respawned)`);
+console.log('cooperative cancellation keeps the worker alive' +
+  ` (follow-up range requests: ${isolated.followupRanges} isolated vs ${inflight.followupRanges} respawned)`);
+
+isolatedServer.close();
 await browser.close();
 server.close();
 console.log('OK');
