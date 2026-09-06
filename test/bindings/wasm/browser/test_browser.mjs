@@ -63,6 +63,20 @@ clearTimeout(timer);
 assert.equal(badWorker, 'ValhallaError', `unloadable worker returned ${badWorker}`);
 console.log('an unloadable worker rejects instead of hanging');
 
+const queuedAbort = await page.evaluate((c) => window.abortQueued(c), config);
+assert.equal(queuedAbort.name, 'AbortError', `queued abort returned ${queuedAbort.name}`);
+assert.equal(queuedAbort.firstOk, true, 'aborting a queued request killed the running one');
+console.log('aborting a queued request leaves the running one alone');
+
+const inflight = await page.evaluate((c) => window.abortInflight(c), config);
+assert.equal(inflight.name, 'AbortError', `in-flight abort returned ${inflight.name}`);
+assert.equal(inflight.after, true, 'the instance was unusable after an in-flight abort');
+// the respawn settles the abort within a macrotask; without it the entry only settles when the
+// worker's own result arrives, which costs the whole request - measured at 0.3ms against 30ms
+assert(inflight.ms < 8, `in-flight abort took ${inflight.ms}ms - the worker result won`);
+console.log(`in-flight abort works in ${inflight.ms.toFixed(1)}ms` +
+  ` (crossOriginIsolated=${inflight.isolated})`);
+
 await browser.close();
 server.close();
 console.log('OK');
