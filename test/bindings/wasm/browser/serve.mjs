@@ -17,6 +17,11 @@ export function serve(root, port = 0) {
       res.writeHead(404).end();
       return;
     }
+    // readFileSync on a directory throws EISDIR out of the handler and takes the process with it
+    if (!stat.isFile()) {
+      res.writeHead(404).end();
+      return;
+    }
     const type = TYPES[extname(path)] ?? 'application/octet-stream';
     const range = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range ?? '');
     if (!range) {
