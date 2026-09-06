@@ -59,10 +59,12 @@ Each of these cost a build cycle:
   protoc stamps `#if PROTOBUF_VERSION != <n>` into every generated `.pb.h`. `versions.env`
   fixes both, so leave `HOST_PROTOC` unset unless you know the versions agree.
 - **Every object needs `-fwasm-exceptions`**, protobuf and abseil included, or the link fails.
-- **`loki.use_connectivity` must be off in tar mode.** `GraphReader::GetTileSet()` cannot
-  enumerate a remote tar, so the connectivity map comes out empty and loki rejects every route
-  with a 170. The `Actor` constructor in `src/valhalla_wasm.cc` forces it off; `valhalla_build_config`
-  always emits it as `true`.
+- **`loki.use_connectivity` must be off for per-tile URLs.** The connectivity map only needs the
+  list of tiles, and a remote tar carries one in `index.bin`, so `GetTileSet()` reads it and tar mode
+  keeps connectivity. A `{tilePath}` URL has no index and nothing is on disk on a first run, so the
+  map comes out empty and loki rejects every route with a 170 — the `Actor` constructor in
+  `src/valhalla_wasm.cc` forces it off for that case only; `valhalla_build_config` always emits it
+  as `true`.
 - **Throw `valhalla_exception_t` from a tile getter, never a bare `std::exception`.** Loki
   turns the latter into a 171 and the real cause is lost. The catch sites in `src/loki/*_action.cc`
   rethrow `valhalla_exception_t` unchanged so this holds for every action, not just `/route`.

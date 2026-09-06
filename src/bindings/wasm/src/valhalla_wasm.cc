@@ -61,9 +61,9 @@ public:
       auto getter = std::make_unique<js_tile_getter_t>(gzipped, tar_mode);
       reader_ = std::make_unique<valhalla::baldr::GraphReader>(config_.get_child("mjolnir"),
                                                                std::move(getter));
-      // GraphReader::GetTileSet() cannot enumerate a remote tar, so the connectivity map comes
-      // out empty and loki rejects every route as unconnected
-      if (tar_mode) {
+      // a per-tile URL has no index, so GetTileSet() has nothing to enumerate and the
+      // connectivity map comes out empty, which makes loki reject every route as unconnected
+      if (!tar_mode) {
         config_.put("loki.use_connectivity", false);
       }
       actor_ = std::make_unique<valhalla::tyr::actor_t>(config_, *reader_, true);

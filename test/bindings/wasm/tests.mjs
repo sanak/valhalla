@@ -140,4 +140,46 @@ console.log('404 on an indexed tile fails loudly');
 
 closeSync(fd);
 
+// --- per-tile URLs over the same hook ------------------------------------------------------
+// A `{tilePath}` URL has no index to enumerate, so loki.use_connectivity has to be off or every
+// route is rejected as unconnected before a single tile is ever fetched.
+const TILE_URL_PREFIX = 'https://example.invalid/tiles/';
+const tileRequests = [];
+
+Module.tileFetch = (url) => {
+  if (!url.startsWith(TILE_URL_PREFIX)) return { httpCode: 404, body: null };
+  const relative = url.slice(TILE_URL_PREFIX.length);
+  tileRequests.push(relative);
+  try {
+    return { httpCode: 200, body: new Uint8Array(readFileSync(join(tileDir, relative))) };
+  } catch {
+    return { httpCode: 404, body: null };
+  }
+};
+
+const perTileConfig = JSON.parse(config);
+delete perTileConfig.mjolnir.tile_dir;
+perTileConfig.mjolnir.tile_url = `${TILE_URL_PREFIX}{tilePath}`;
+
+const perTileActor = new Module.Actor(JSON.stringify(perTileConfig));
+const perTileRoute = JSON.parse(
+  perTileActor.route(
+    JSON.stringify({
+      locations: [
+        { lat: 47.141, lon: 9.521 },
+        { lat: 47.165, lon: 9.51 },
+      ],
+      costing: 'auto',
+    }),
+  ),
+);
+assert(tileRequests.length > 0, 'no per-tile requests were made');
+assert(
+  tileRequests.every((r) => /^\d+(\/\d{3})+\.gph$/.test(r)),
+  `per-tile requests are not tile paths: ${tileRequests.join(', ')}`,
+);
+assert.deepEqual(perTileRoute.trip.summary, summary, 'per-tile route differs from the NODEFS route');
+perTileActor.delete();
+console.log(`per-tile route matches, ${tileRequests.length} tile requests`);
+
 console.log('OK');
