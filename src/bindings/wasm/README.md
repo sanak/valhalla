@@ -51,6 +51,33 @@ The node test routes Vaduz to Schaan over NODEFS-mounted tiles and again over a 
 through range requests. The browser test serves the module and a tar to headless chromium and
 asserts that an IDBFS cache cuts the range requests on a second load.
 
+## Cancellation
+
+Every action takes a second, optional argument `{ signal }` where `signal` is a standard
+`AbortSignal`. Aborting it rejects the call with a `DOMException` named `'AbortError'`. Calls
+are serialised — one action in flight at a time, the rest queued on the main thread — so an
+abort on a queued call never touches the worker: it is spliced out of the queue and rejected
+directly.
+
+Aborting the in-flight call is cooperative when possible. If a `SharedArrayBuffer` could be
+allocated, the main thread flips a flag in shared memory that the wasm module polls from
+inside valhalla's expansion loops, so the pathfinder unwinds and the worker survives with its
+warm tile cache. Getting a `SharedArrayBuffer` in a browser requires the page be served with
+`Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`.
+
+**`require-corp` has a consequence beyond this binding: every cross-origin subresource the
+page loads must then be fetched in CORS mode or carry `Cross-Origin-Resource-Policy`.** This
+binding's whole point is range-fetching tiles from a remote host, so turning on isolation to
+get cooperative cancellation can silently break tile fetching — check the tile host's response
+headers before enabling COOP/COEP.
+
+Without a `SharedArrayBuffer`, or when the worker doesn't acknowledge the abort within
+`abortTimeoutMs` (default 3000, only reached when a synchronous tile fetch outlasts the
+interrupt checks), the worker is terminated and rebuilt: the in-memory tile cache is lost, but
+an IDBFS cache under `cacheDir` survives since it lives in IndexedDB, not in the worker. Every
+in-flight abort restarts the worker this way when `SharedArrayBuffer` is unavailable,
+regardless of `abortTimeoutMs`.
+
 ## Pitfalls
 
 Each of these cost a build cycle:
