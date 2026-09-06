@@ -966,6 +966,11 @@ std::unordered_set<GraphId> GraphReader::GetTileSet() const {
     for (const auto& t : tile_extract_->tiles) {
       tiles.emplace(t.first);
     }
+  } // or the remote tar's index, which lists the whole tileset before anything is cached
+  else if (!remote_tar_offsets_.empty()) {
+    for (const auto& t : remote_tar_offsets_) {
+      tiles.emplace(t.first);
+    }
   } // or individually on disk
   else if (!tile_dir_.empty()) {
     // for each level
@@ -998,6 +1003,12 @@ std::unordered_set<GraphId> GraphReader::GetTileSet(const uint8_t level) const {
   if (tile_extract_->tiles.size()) {
     for (const auto& t : tile_extract_->tiles) {
       if (static_cast<GraphId>(t.first).level() == level) {
+        tiles.emplace(t.first);
+      }
+    } // or the remote tar's index
+  } else if (!remote_tar_offsets_.empty()) {
+    for (const auto& t : remote_tar_offsets_) {
+      if (t.first.level() == level) {
         tiles.emplace(t.first);
       }
     } // or individually on disk
