@@ -56,6 +56,45 @@ assert.throws(
 
 actor.delete();
 
+// --- cancellation ------------------------------------------------------------------------
+// Atomics on a plain SharedArrayBuffer, which node has unconditionally. The hook stands in
+// for the main thread flipping the flag while the worker is blocked in the wasm call.
+{
+  const flag = new Int32Array(new SharedArrayBuffer(4));
+  Module.cancelFlag = flag;
+  Module.currentRequestId = 7;
+  const cancellingActor = new Module.Actor(config);
+  Atomics.store(flag, 0, 7);
+  assert.throws(
+    () =>
+      cancellingActor.isochrone(
+        JSON.stringify({
+          locations: [{ lat: 47.141, lon: 9.521 }],
+          costing: 'auto',
+          contours: [{ time: 15 }],
+        }),
+      ),
+    (e) => e.name === 'AbortError',
+    'expected an AbortError once the cancel flag matches the running request id',
+  );
+
+  // a flag that names a different request must not touch this one
+  Atomics.store(flag, 0, 8);
+  const iso = cancellingActor.isochrone(
+    JSON.stringify({
+      locations: [{ lat: 47.141, lon: 9.521 }],
+      costing: 'auto',
+      contours: [{ time: 1 }],
+    }),
+  );
+  assert(JSON.parse(iso).features.length > 0, 'a non-matching cancel id must not abort');
+
+  cancellingActor.delete();
+  Module.cancelFlag = undefined;
+  Module.currentRequestId = undefined;
+  console.log('cancellation aborts only the request whose id matches the flag');
+}
+
 // --- remote tar over the tileFetch hook ---------------------------------------------------
 // Same tiles, reached by range requests instead of NODEFS. The hook stands in for sync XHR.
 const here = dirname(fileURLToPath(import.meta.url));

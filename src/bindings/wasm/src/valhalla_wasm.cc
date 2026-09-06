@@ -11,6 +11,7 @@
 #include <emscripten/bind.h>
 #include <emscripten/em_js.h>
 
+#include <functional>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -28,6 +29,17 @@ EM_JS(void, throw_valhalla_error, (const char* message, int code, int http_code)
   }
   throw err;
 });
+
+// The only channel that reaches a worker blocked inside a synchronous wasm call: the main
+// thread's Atomics.store lands in shared memory, which needs no event loop to observe.
+// clang-format off
+EM_JS(int, cancel_requested, (), {
+  return Module.cancelFlag &&
+         Atomics.load(Module.cancelFlag, 0) === Module.currentRequestId ? 1 : 0;
+});
+// clang-format on
+
+EM_JS(void, throw_abort_error, (), { throw new DOMException('request cancelled', 'AbortError'); });
 
 namespace {
 
@@ -75,7 +87,9 @@ public:
 #define VALHALLA_WASM_ACTION(name)                                                                   \
   std::string name(const std::string& request) {                                                     \
     try {                                                                                            \
-      return actor_->name(request);                                                                  \
+      return actor_->name(request, &interrupt_);                                                     \
+    } catch (const valhalla::interrupt_exception_t&) {                                               \
+      throw_abort_error();                                                                           \
     } catch (const valhalla::valhalla_exception_t& e) {                                              \
       throw_valhalla_error(e.message.c_str(), e.code, e.http_code);                                  \
     } catch (const std::exception& e) { throw_valhalla_error(e.what(), 0, 0); }                      \
@@ -101,6 +115,11 @@ private:
   // actor_t holds a non-owning pointer to the reader, so it must be declared first and die last
   std::unique_ptr<valhalla::baldr::GraphReader> reader_;
   std::unique_ptr<valhalla::tyr::actor_t> actor_;
+  const std::function<void()> interrupt_ = [] {
+    if (cancel_requested()) {
+      throw valhalla::interrupt_exception_t{};
+    }
+  };
 };
 
 std::string version() {
