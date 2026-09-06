@@ -53,6 +53,7 @@
       name = e.name;
     }
     const firstOk = await slow.then(() => true).catch(() => false);
+    v.terminate();
     return { name, firstOk };
   };
   window.abortInflight = async (config) => {
@@ -71,11 +72,14 @@
       name = e.name;
     }
     const ms = performance.now() - t0;
+    // marks where the caller should start counting range requests for the follow-up alone
+    console.log('valhalla-followup-start');
     // the instance must survive: a later request has to work on the same object
     const after = await v.route(JSON.stringify(routeRequest)).then(
       (r) => JSON.parse(r).trip.summary.length > 0,
       () => false,
     );
+    v.terminate();
     return { name, ms, after, isolated: self.crossOriginIsolated === true };
   };
   window.ready = true;

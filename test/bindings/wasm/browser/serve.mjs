@@ -7,7 +7,13 @@ const TYPES = {
   '.wasm': 'application/wasm', '.tar': 'application/x-tar',
 };
 
-export function serve(root, port = 0) {
+export function serve(root, port = 0, { crossOriginIsolated = false } = {}) {
+  const isolation = crossOriginIsolated
+    ? {
+        'cross-origin-opener-policy': 'same-origin',
+        'cross-origin-embedder-policy': 'require-corp',
+      }
+    : {};
   const server = createServer((req, res) => {
     const path = join(root, normalize(decodeURIComponent(req.url.split('?')[0])));
     let stat;
@@ -25,7 +31,7 @@ export function serve(root, port = 0) {
     const type = TYPES[extname(path)] ?? 'application/octet-stream';
     const range = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range ?? '');
     if (!range) {
-      res.writeHead(200, { 'content-type': type, 'content-length': stat.size });
+      res.writeHead(200, { 'content-type': type, 'content-length': stat.size, ...isolation });
       res.end(readFileSync(path));
       return;
     }
@@ -39,6 +45,7 @@ export function serve(root, port = 0) {
       'content-type': type,
       'content-length': buf.length,
       'content-range': `bytes ${start}-${end}/${stat.size}`,
+      ...isolation,
     });
     res.end(buf);
   });
