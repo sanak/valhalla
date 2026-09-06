@@ -64,7 +64,8 @@ Each of these cost a build cycle:
   with a 170. The `Actor` constructor in `src/valhalla_wasm.cc` forces it off; `valhalla_build_config`
   always emits it as `true`.
 - **Throw `valhalla_exception_t` from a tile getter, never a bare `std::exception`.** Loki
-  turns the latter into a 171 and the real cause is lost.
+  turns the latter into a 171 and the real cause is lost. The catch sites in `src/loki/*_action.cc`
+  rethrow `valhalla_exception_t` unchanged so this holds for every action, not just `/route`.
 - **Never hand-write a valhalla config.** `worker_t` reads keys with `ptree.get<T>()` and no
   defaults, so a missing one throws `ptree_bad_path`. Generate it with
   `<repo>/scripts/valhalla_build_config` and override only what you need — that is what
