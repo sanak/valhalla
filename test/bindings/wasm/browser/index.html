@@ -3,6 +3,18 @@
 <title>valhalla wasm browser test</title>
 <script type="module">
   import { Valhalla } from './index.mjs';
+  const bigIsochroneRequest = {
+    locations: [{ lat: 47.141, lon: 9.521 }],
+    costing: 'auto',
+    contours: [{ time: 60 }],
+  };
+  const routeRequest = {
+    locations: [
+      { lat: 47.141, lon: 9.521 },
+      { lat: 47.165, lon: 9.51 },
+    ],
+    costing: 'auto',
+  };
   window.run = async (config, cacheDir) => {
     const v = await Valhalla.create({ workerUrl: './worker.js', config, cacheDir });
     const route = JSON.parse(
@@ -27,6 +39,21 @@
     } catch (e) {
       return e.name;
     }
+  };
+  window.abortQueued = async (config) => {
+    const v = await Valhalla.create({ workerUrl: './worker.js', config, cacheDir: null });
+    const ac = new AbortController();
+    const slow = v.isochrone(JSON.stringify(bigIsochroneRequest));
+    const queued = v.route(JSON.stringify(routeRequest), { signal: ac.signal });
+    ac.abort();
+    let name = 'none';
+    try {
+      await queued;
+    } catch (e) {
+      name = e.name;
+    }
+    const firstOk = await slow.then(() => true).catch(() => false);
+    return { name, firstOk };
   };
   window.ready = true;
 </script>

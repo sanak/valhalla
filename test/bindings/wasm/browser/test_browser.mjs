@@ -63,6 +63,11 @@ clearTimeout(timer);
 assert.equal(badWorker, 'ValhallaError', `unloadable worker returned ${badWorker}`);
 console.log('an unloadable worker rejects instead of hanging');
 
+const queuedAbort = await page.evaluate((c) => window.abortQueued(c), config);
+assert.equal(queuedAbort.name, 'AbortError', `queued abort returned ${queuedAbort.name}`);
+assert.equal(queuedAbort.firstOk, true, 'aborting a queued request killed the running one');
+console.log('aborting a queued request leaves the running one alone');
+
 await browser.close();
 server.close();
 console.log('OK');
