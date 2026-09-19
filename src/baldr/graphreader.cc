@@ -155,19 +155,33 @@ void GraphReader::load_remote_tar_offsets() {
   auto index_bin_response = CURL_OR_THROW(tile_getter_->get(tile_url_, sizeof(tar::header_t),
                                                             first_file_header->get_file_size()),
                                           tile_url_);
-  parse_remote_tile_index(index_bin_response.bytes_);
-  if (remote_tile_index_.empty()) {
-    throw std::runtime_error("The 'index.bin' doesn't contain any data at " + tile_url_);
+  if (!parse_remote_tile_index(index_bin_response.bytes_)) {
+    throw std::runtime_error("The 'index.bin' is empty or malformed at " + tile_url_);
   }
 };
 
-void GraphReader::parse_remote_tile_index(const tile_getter_t::bytes_t& bytes) {
-  const auto count = bytes.size() / sizeof(tile_index_entry);
-  remote_tile_index_.reserve(count);
-  const auto entries = std::span(reinterpret_cast<const tile_index_entry*>(bytes.data()), count);
-  for (const auto& entry : entries) {
-    remote_tile_index_.insert({GraphId{entry.tile_id}, {entry.offset, entry.size}});
+bool GraphReader::parse_remote_tile_index(const tile_getter_t::bytes_t& bytes) {
+  if (bytes.empty() || bytes.size() % sizeof(tile_index_entry) != 0) {
+    return false;
   }
+  const auto entries = std::span(reinterpret_cast<const tile_index_entry*>(bytes.data()),
+                                 bytes.size() / sizeof(tile_index_entry));
+  remote_tile_index_t index;
+  index.reserve(entries.size());
+  for (const auto& entry : entries) {
+    const GraphId id{entry.tile_id};
+    const auto& transit = TileHierarchy::GetTransitLevel();
+    if (id.level() > transit.level || id.id() != 0) {
+      return false;
+    }
+    const auto& level = id.level() == transit.level ? transit : TileHierarchy::levels()[id.level()];
+    if (id.tileid() >= level.tiles.TileCount()) {
+      return false;
+    }
+    index.insert({id, {entry.offset, entry.size}});
+  }
+  remote_tile_index_ = std::move(index);
+  return true;
 }
 
 // a plain tile URL has no listing, so an index.bin next to the tiles is the only way to learn the
@@ -177,9 +191,9 @@ void GraphReader::load_remote_tile_index() {
   auto response = tile_getter_->get(index_url);
   if (response.status_ != tile_getter_t::status_code_t::SUCCESS) {
     LOG_INFO("No index.bin at " + index_url + ", the remote tileset's extent is unknown");
-    return;
+  } else if (!parse_remote_tile_index(response.bytes_)) {
+    LOG_WARN("Ignoring " + index_url + ", it is not a valid index.bin (served compressed?)");
   }
-  parse_remote_tile_index(response.bytes_);
 }
 
 // ----------------------------------------------------------------------------
@@ -664,7 +678,7 @@ graph_tile_ptr GraphReader::GetGraphTile(const GraphId& graphid) {
     uint64_t tar_size = is_tar_url_ && indexed ? pos->second.size : 0;
     tile = nullptr;
     // an index tells us exactly which tiles exist, without one we ask and let the 404 answer
-    if (remote_tile_index_.empty() ? !is_tar_url_ : indexed) {
+    if (indexed || remote_tile_index_.empty()) {
       tile = GraphTile::CacheTileURL(tile_url_, base, tile_getter_.get(), tile_dir_, tar_offset,
                                      tar_size, url_id_txt_path_, url_id_txt_checksum_);
     }

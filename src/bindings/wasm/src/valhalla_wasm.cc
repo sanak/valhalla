@@ -73,9 +73,9 @@ public:
       auto getter = std::make_unique<js_tile_getter_t>(gzipped, tar_mode);
       reader_ = std::make_unique<valhalla::baldr::GraphReader>(config_.get_child("mjolnir"),
                                                                std::move(getter));
-      // an empty tileset gives loki a connectivity map that rejects every route as unconnected;
-      // a plain tile URL only knows its extent when an index.bin sits next to the tiles
-      if (reader_->GetTileSet().empty()) {
+      // without index.bin the reader can only list what tile_dir has cached, and a connectivity
+      // map built from that rejects every route leaving the cached area as unconnected
+      if (!reader_->HasRemoteTileIndex()) {
         config_.put("loki.use_connectivity", false);
       }
       actor_ = std::make_unique<valhalla::tyr::actor_t>(config_, *reader_, true);

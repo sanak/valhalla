@@ -891,7 +891,6 @@ TEST(CacheLruSoft, TrimOnExactlyFullCache) {
   CheckGraphTile(cache.Get(tile2_id), tile2_id, tile2_size);
 }
 
-
 // Answers from a fixed url -> bytes map and records every request, so the remote index tests
 // need neither a tile server nor real tiles.
 class recording_tile_getter_t : public tile_getter_t {
@@ -1005,6 +1004,52 @@ TEST_F(RemoteTileIndex, TileMissingFromIndexIsNeverRequested) {
 
   ASSERT_EQ(recorder->requests.size(), 1);
   EXPECT_EQ(recorder->requests[0].url, kIndexUrl);
+}
+
+// a host that answers unknown paths with a 200 page (SPA fallbacks do) must not pass for an index
+TEST_F(RemoteTileIndex, IndexBinOfPartialEntriesIsIgnored) {
+  auto getter = std::make_unique<recording_tile_getter_t>();
+  auto bytes = make_index_bin({GraphId{818660, 2, 0}});
+  bytes.push_back('\n');
+  getter->responses[kIndexUrl] = bytes;
+
+  GraphReader reader(per_tile_conf(), std::move(getter));
+
+  EXPECT_FALSE(reader.HasRemoteTileIndex());
+  EXPECT_TRUE(reader.GetTileSet().empty());
+}
+
+TEST_F(RemoteTileIndex, IndexBinWithInvalidTileIdIsIgnored) {
+  const std::string html = "<!DOCTYPE html><html></html>\n\n\n\n";
+  ASSERT_EQ(html.size() % kIndexEntrySize, 0);
+  auto getter = std::make_unique<recording_tile_getter_t>();
+  getter->responses[kIndexUrl] = std::vector<char>(html.begin(), html.end());
+
+  GraphReader reader(per_tile_conf(), std::move(getter));
+
+  EXPECT_FALSE(reader.HasRemoteTileIndex());
+  EXPECT_TRUE(reader.GetTileSet().empty());
+}
+
+// tiles cached by an earlier run are only part of the tileset, so they must not count as an index
+TEST_F(RemoteTileIndex, CachedTilesAreNotAnIndex) {
+  const auto cached = std::filesystem::path(kRemoteIndexTileDir) / "2/000/818/660.gph";
+  std::filesystem::create_directories(cached.parent_path());
+  std::ofstream(cached) << "tile";
+
+  GraphReader reader(per_tile_conf(), std::make_unique<recording_tile_getter_t>());
+
+  EXPECT_FALSE(reader.GetTileSet().empty());
+  EXPECT_FALSE(reader.HasRemoteTileIndex());
+}
+
+TEST_F(RemoteTileIndex, LoadedIndexBinIsReported) {
+  auto getter = std::make_unique<recording_tile_getter_t>();
+  getter->responses[kIndexUrl] = make_index_bin({GraphId{818660, 2, 0}});
+
+  GraphReader reader(per_tile_conf(), std::move(getter));
+
+  EXPECT_TRUE(reader.HasRemoteTileIndex());
 }
 
 } // namespace

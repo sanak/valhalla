@@ -242,4 +242,35 @@ assert(perTileStatus.bbox, 'an indexed per-tile tileset must keep loki.use_conne
 perTileActor.delete();
 console.log(`per-tile route matches, ${tileRequests.length - 1} tile requests`);
 
+// Without index.bin the reader can only list what tile_dir has cached, and a connectivity map
+// built from that rejects every route leaving the cached area, so connectivity has to go off.
+const WARM_CACHE = '/warm-cache';
+const cachedTile = tileRequests.find((r) => r !== 'index.bin');
+Module.FS.mkdirTree(`${WARM_CACHE}/${dirname(cachedTile)}`);
+Module.FS.writeFile(`${WARM_CACHE}/${cachedTile}`, readFileSync(join(tileDir, cachedTile)));
+const indexedFetch = Module.tileFetch;
+Module.tileFetch = (url, offset, size) =>
+  url.endsWith('/index.bin') ? { httpCode: 404, body: null } : indexedFetch(url, offset, size);
+
+const unindexedConfig = JSON.parse(config);
+unindexedConfig.mjolnir.tile_dir = WARM_CACHE;
+unindexedConfig.mjolnir.tile_url = `${TILE_URL_PREFIX}{tilePath}`;
+const unindexedActor = new Module.Actor(JSON.stringify(unindexedConfig));
+const unindexedStatus = JSON.parse(unindexedActor.status('{"verbose":true}'));
+assert(!unindexedStatus.bbox, 'cached tiles alone must not turn loki.use_connectivity on');
+const unindexedRoute = JSON.parse(
+  unindexedActor.route(
+    JSON.stringify({
+      locations: [
+        { lat: 47.141, lon: 9.521 },
+        { lat: 47.165, lon: 9.51 },
+      ],
+      costing: 'auto',
+    }),
+  ),
+);
+assert.deepEqual(unindexedRoute.trip.summary, summary, 'unindexed route differs from NODEFS');
+unindexedActor.delete();
+console.log('per-tile without index.bin keeps connectivity off over a warm cache');
+
 console.log('OK');
