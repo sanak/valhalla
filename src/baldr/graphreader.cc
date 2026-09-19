@@ -151,23 +151,36 @@ void GraphReader::load_remote_tar_offsets() {
                              tile_url_);
   }
 
-  // fetch the index.bin and read its content into remote_tar_offsets
+  // fetch the index.bin and read its content into remote_tile_index_
   auto index_bin_response = CURL_OR_THROW(tile_getter_->get(tile_url_, sizeof(tar::header_t),
                                                             first_file_header->get_file_size()),
                                           tile_url_);
-  const auto index_bin_size = index_bin_response.bytes_.size() / sizeof(tile_index_entry);
-
-  remote_tar_offsets_.reserve(index_bin_size);
-  const auto entries =
-      std::span(reinterpret_cast<tile_index_entry*>(index_bin_response.bytes_.data()),
-                index_bin_size);
-  for (const auto& entry : entries) {
-    remote_tar_offsets_.insert({GraphId{entry.tile_id}, {entry.offset, entry.size}});
-  }
-  if (remote_tar_offsets_.size() == 0) {
+  parse_remote_tile_index(index_bin_response.bytes_);
+  if (remote_tile_index_.empty()) {
     throw std::runtime_error("The 'index.bin' doesn't contain any data at " + tile_url_);
   }
 };
+
+void GraphReader::parse_remote_tile_index(const tile_getter_t::bytes_t& bytes) {
+  const auto count = bytes.size() / sizeof(tile_index_entry);
+  remote_tile_index_.reserve(count);
+  const auto entries = std::span(reinterpret_cast<const tile_index_entry*>(bytes.data()), count);
+  for (const auto& entry : entries) {
+    remote_tile_index_.insert({GraphId{entry.tile_id}, {entry.offset, entry.size}});
+  }
+}
+
+// a plain tile URL has no listing, so an index.bin next to the tiles is the only way to learn the
+// tileset's extent; it's optional, without it loki's connectivity map comes out empty
+void GraphReader::load_remote_tile_index() {
+  const auto index_url = make_single_point_url(tile_url_, "index.bin");
+  auto response = tile_getter_->get(index_url);
+  if (response.status_ != tile_getter_t::status_code_t::SUCCESS) {
+    LOG_INFO("No index.bin at " + index_url + ", the remote tileset's extent is unknown");
+    return;
+  }
+  parse_remote_tile_index(response.bytes_);
+}
 
 // ----------------------------------------------------------------------------
 // FlatTileCache implementation
@@ -503,6 +516,8 @@ GraphReader::GraphReader(const boost::property_tree::ptree& pt,
     }
     if (is_tar_url_) {
       load_remote_tar_offsets();
+    } else {
+      load_remote_tile_index();
     }
     // we allow to not cache tiles locally from URL
     if (!tile_dir_.empty()) {
@@ -642,13 +657,14 @@ graph_tile_ptr GraphReader::GetGraphTile(const GraphId& graphid) {
       }
     }
 
-    const auto pos = remote_tar_offsets_.find(base);
-    const bool tar_has_tile = pos != remote_tar_offsets_.end();
-    uint64_t tar_offset = tar_has_tile ? pos->second.offset : 0;
-    uint64_t tar_size = tar_has_tile ? pos->second.size : 0;
+    const auto pos = remote_tile_index_.find(base);
+    const bool indexed = pos != remote_tile_index_.end();
+    // only a tar turns the entry into a byte range, a plain tile URL addresses the tile directly
+    uint64_t tar_offset = is_tar_url_ && indexed ? pos->second.offset : 0;
+    uint64_t tar_size = is_tar_url_ && indexed ? pos->second.size : 0;
     tile = nullptr;
-    // either we find its tar offset or it's a plain tiles URL
-    if (tar_has_tile || !is_tar_url_) {
+    // an index tells us exactly which tiles exist, without one we ask and let the 404 answer
+    if (remote_tile_index_.empty() ? !is_tar_url_ : indexed) {
       tile = GraphTile::CacheTileURL(tile_url_, base, tile_getter_.get(), tile_dir_, tar_offset,
                                      tar_size, url_id_txt_path_, url_id_txt_checksum_);
     }
@@ -966,9 +982,9 @@ std::unordered_set<GraphId> GraphReader::GetTileSet() const {
     for (const auto& t : tile_extract_->tiles) {
       tiles.emplace(t.first);
     }
-  } // or the remote tar's index, which lists the whole tileset before anything is cached
-  else if (!remote_tar_offsets_.empty()) {
-    for (const auto& t : remote_tar_offsets_) {
+  } // or the remote index.bin, which lists the whole tileset before anything is cached
+  else if (!remote_tile_index_.empty()) {
+    for (const auto& t : remote_tile_index_) {
       tiles.emplace(t.first);
     }
   } // or individually on disk
@@ -1005,9 +1021,9 @@ std::unordered_set<GraphId> GraphReader::GetTileSet(const uint8_t level) const {
       if (static_cast<GraphId>(t.first).level() == level) {
         tiles.emplace(t.first);
       }
-    } // or the remote tar's index
-  } else if (!remote_tar_offsets_.empty()) {
-    for (const auto& t : remote_tar_offsets_) {
+    } // or the remote index.bin
+  } else if (!remote_tile_index_.empty()) {
+    for (const auto& t : remote_tile_index_) {
       if (t.first.level() == level) {
         tiles.emplace(t.first);
       }
