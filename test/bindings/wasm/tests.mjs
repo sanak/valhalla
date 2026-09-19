@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 import { execFileSync } from 'node:child_process';
+import { gzipSync } from 'node:zlib';
 
 const modulePath = process.env.VALHALLA_WASM;
 const tileDir = process.env.VALHALLA_TILE_DIR;
@@ -179,6 +180,28 @@ console.log('404 on an indexed tile fails loudly');
 
 closeSync(fd);
 
+// --- a tar of gzipped tiles ----------------------------------------------------------------
+// valhalla_build_extract --gzip keeps index.bin plain and gzips each member, so ranges still
+// address single tiles and tile_url_gz has the reader gunzip them.
+const gzTarPath = join(process.env.TMPDIR ?? '/tmp', 'valhalla-wasm-fixture-gz.tar');
+execFileSync(join(here, 'make_fixture.sh'), [tileDir, gzTarPath, '--gzip'], { stdio: 'inherit' });
+const gzFd = openSync(gzTarPath, 'r');
+Module.tileFetch = (url, offset, size) => {
+  if (url !== TAR_URL) return { httpCode: 404, body: null };
+  const buf = Buffer.alloc(size);
+  const read = readSync(gzFd, buf, 0, size, offset);
+  return { httpCode: 206, body: new Uint8Array(buf.buffer, buf.byteOffset, read) };
+};
+const gzTarConfig = structuredClone(tarConfig);
+gzTarConfig.mjolnir.tile_url_gz = true;
+const gzTarActor = new Module.Actor(JSON.stringify(gzTarConfig));
+const gzTarRoute = JSON.parse(gzTarActor.route(JSON.stringify({ locations: LOCATIONS, costing: 'auto' })));
+assert.deepEqual(gzTarRoute.trip.summary, summary, 'gzipped tar route differs from the NODEFS route');
+assert(JSON.parse(gzTarActor.status('{"verbose":true}')).bbox, 'a gzipped tar must keep connectivity');
+gzTarActor.delete();
+closeSync(gzFd);
+console.log('gzipped tar route matches');
+
 // --- per-tile URLs over the same hook ------------------------------------------------------
 // A `{tilePath}` URL has no listing, so an index.bin next to the tiles is what lets the reader
 // enumerate the tileset and loki keep its connectivity map.
@@ -241,6 +264,30 @@ assert(perTileStatus.bbox, 'an indexed per-tile tileset must keep loki.use_conne
 
 perTileActor.delete();
 console.log(`per-tile route matches, ${tileRequests.length - 1} tile requests`);
+
+// the same tiles gzipped, as a static host would serve them for tile_url_gz
+const plainPerTileFetch = Module.tileFetch;
+Module.tileFetch = (url) => {
+  if (!url.startsWith(TILE_URL_PREFIX)) return { httpCode: 404, body: null };
+  const relative = url.slice(TILE_URL_PREFIX.length);
+  if (relative === 'index.bin') return { httpCode: 200, body: indexBin };
+  try {
+    return { httpCode: 200, body: new Uint8Array(gzipSync(readFileSync(join(tileDir, relative)))) };
+  } catch {
+    return { httpCode: 404, body: null };
+  }
+};
+const gzPerTileConfig = structuredClone(perTileConfig);
+gzPerTileConfig.mjolnir.tile_url_gz = true;
+const gzPerTileActor = new Module.Actor(JSON.stringify(gzPerTileConfig));
+const gzPerTileRoute = JSON.parse(
+  gzPerTileActor.route(JSON.stringify({ locations: LOCATIONS, costing: 'auto' })),
+);
+assert.deepEqual(gzPerTileRoute.trip.summary, summary, 'gzipped per-tile route differs from NODEFS');
+assert(JSON.parse(gzPerTileActor.status('{"verbose":true}')).bbox, 'gzipped per-tile lost connectivity');
+gzPerTileActor.delete();
+console.log('gzipped per-tile route matches');
+Module.tileFetch = plainPerTileFetch;
 
 // Without index.bin the reader can only list what tile_dir has cached, and a connectivity map
 // built from that rejects every route leaving the cached area, so connectivity has to go off.

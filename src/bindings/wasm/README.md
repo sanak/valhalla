@@ -47,9 +47,26 @@ Already have an Emscripten SDK? Point at it instead of installing a second copy:
     VALHALLA_TILE_DIR=$WASM_BUILD_ROOT/tiles \
       "$EMSDK_NODE" ../../../test/bindings/wasm/browser/test_browser.mjs
 
-The node test routes Vaduz to Schaan over NODEFS-mounted tiles and again over a tar reached
-through range requests. The browser test serves the module and a tar to headless chromium and
-asserts that an IDBFS cache cuts the range requests on a second load.
+The node test routes Vaduz to Schaan over NODEFS-mounted tiles and again over every remote
+layout below. The browser test serves the module and a tar to headless chromium and asserts
+that an IDBFS cache cuts the range requests on a second load.
+
+## Tile hosting
+
+`mjolnir.tile_url` picks the layout: a URL containing `{tilePath}` addresses one file per tile,
+anything else is a tar fetched with range requests.
+
+| Layout | Produced by | `tile_url_gz` |
+|---|---|---|
+| tar | `valhalla_build_extract` | `false` |
+| tar of gzipped tiles | `valhalla_build_extract --gzip` | `true` |
+| per-tile `.gph` + `index.bin` | a tile_dir, plus `index.bin` from a tar | `false` |
+| per-tile `.gph` holding gzip bytes + `index.bin` | gzip each tile, keep the `.gph` name | `true` |
+
+`index.bin` is always served uncompressed; without it a per-tile layout still routes, but with
+`loki.use_connectivity` off. A gzipped tar or gzipped per-tile files keep the IDBFS cache
+compressed too. Don't gzip the whole tar or set `Content-Encoding` on it: range offsets would
+then apply to the compressed bytes.
 
 ## Cancellation
 

@@ -78,3 +78,57 @@ TEST(TarIndexer, CheckScanTar) {
 
   ASSERT_NE(reader_tar.tile_extract_->checksum, 0);
 }
+
+const std::string kGzTar = "test/data/utrecht_tiles/tiles_gz.tar";
+
+TEST(TarIndexer, GzippedExtractIsNotMapped) {
+  auto config = test::make_config("test/data/utrecht_tiles", {{"mjolnir.tile_extract", kGzTar}});
+  TestGraphReader reader(config.get_child("mjolnir"));
+
+  EXPECT_TRUE(reader.tile_extract_->tiles.empty());
+}
+
+// Serves byte ranges straight out of a local file, standing in for a tar behind an HTTP server.
+class file_range_getter_t : public vb::tile_getter_t {
+public:
+  explicit file_range_getter_t(const std::string& path) : file_(path, std::ios::binary) {
+  }
+
+  GET_response_t get(const std::string&, const uint64_t offset, const uint64_t size) override {
+    GET_response_t result;
+    result.bytes_.resize(size);
+    file_.seekg(static_cast<std::streamoff>(offset));
+    file_.read(result.bytes_.data(), static_cast<std::streamsize>(size));
+    result.status_ = file_ ? status_code_t::SUCCESS : status_code_t::FAILURE;
+    result.http_code_ = file_ ? 206 : 416;
+    return result;
+  }
+
+  HEAD_response_t head(const std::string&, header_mask_t) override {
+    return {};
+  }
+
+  bool gzipped() const override {
+    return true;
+  }
+
+private:
+  std::ifstream file_;
+};
+
+TEST(TarIndexer, RemoteGzippedTarMatchesTileDir) {
+  boost::property_tree::ptree pt;
+  pt.put("tile_url", "http://localhost/tiles_gz.tar");
+  vb::GraphReader reader_gz(pt, std::make_unique<file_range_getter_t>(kGzTar));
+  vb::GraphReader reader_dir(config_dir.get_child("mjolnir"));
+
+  ASSERT_TRUE(reader_gz.HasRemoteTileIndex());
+  EXPECT_EQ(reader_gz.GetTileSet(), reader_dir.GetTileSet());
+  for (const auto& tile_id : reader_dir.GetTileSet()) {
+    auto dir_tile = reader_dir.GetGraphTile(tile_id);
+    auto gz_tile = reader_gz.GetGraphTile(tile_id);
+    ASSERT_TRUE(gz_tile) << tile_id;
+    EXPECT_EQ(dir_tile->header()->end_offset(), gz_tile->header()->end_offset());
+    EXPECT_EQ(memcmp(dir_tile->header(), gz_tile->header(), sizeof(vb::GraphTileHeader)), 0);
+  }
+}

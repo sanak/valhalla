@@ -88,6 +88,16 @@ GraphReader::tile_extract_t::tile_extract_t(const boost::property_tree::ptree& p
     try {
       archive = std::make_shared<midgard::tar>(pt.get<std::string>("tile_extract"));
       auto corrupt_blocks = load_tiles(*archive, tiles);
+      // valhalla_build_extract --gzip output only decompresses on the tile_url path, mapped as is
+      // it would hand out gzip bytes as tiles
+      if (!tiles.empty()) {
+        const auto* first = reinterpret_cast<const uint8_t*>(tiles.begin()->second.first);
+        if (tiles.begin()->second.second >= 2 && first[0] == 0x1f && first[1] == 0x8b) {
+          LOG_ERROR("Tile extract holds gzipped tiles, serve it as mjolnir.tile_url with "
+                    "mjolnir.tile_url_gz instead");
+          tiles.clear();
+        }
+      }
       if (scan_tar) {
         checksum = 0;
         for (const auto& kv : tiles) {

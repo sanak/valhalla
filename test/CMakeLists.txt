@@ -208,6 +208,7 @@ valhalla_test_config(utrecht_tiles_extract
   [=[{"mjolnir":{"tile_dir":"test/data/utrecht_tiles","tile_extract":"test/data/utrecht_tiles/tiles.tar","traffic_extract":"test/data/utrecht_tiles/traffic.tar","concurrency":1}}]=]
   utrecht_tiles_extract_cfg)
 add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/test/data/utrecht_tiles/traffic.tar
+    ${CMAKE_BINARY_DIR}/test/data/utrecht_tiles/tiles_gz.tar
   COMMAND ${CMAKE_COMMAND} -E make_directory test/data/utrecht_tiles/
   COMMAND $<TARGET_FILE:valhalla_build_tiles>
       --config ${utrecht_tiles_initial_cfg}
@@ -231,6 +232,9 @@ add_custom_command(OUTPUT ${CMAKE_BINARY_DIR}/test/data/utrecht_tiles/traffic.ta
   COMMAND ${Python_EXECUTABLE} ${CMAKE_BINARY_DIR}/valhalla_build_extract
       --config ${utrecht_tiles_extract_cfg}
       --with-traffic --overwrite
+  COMMAND ${CMAKE_BINARY_DIR}/valhalla_build_extract
+      --inline-config '{"mjolnir":{"tile_dir":"test/data/utrecht_tiles","tile_extract":"test/data/utrecht_tiles/tiles_gz.tar","concurrency":1,"logging":{"type":""}}}'
+      --gzip --overwrite
   COMMENT "Building Utrecht Tiles..."
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
   DEPENDS valhalla_build_tiles valhalla_add_predicted_traffic build_timezones
