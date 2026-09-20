@@ -12,13 +12,17 @@ on:
   # dijkstras pair are here because the wasm suite cancels an isochrone, the one cancellation
   # path it can detect a regression in. The shape-match fallback guards in
   # trace_route_action.cc, trace_attributes_action.cc and triplegbuilder.cc are deliberately
-  # absent: nothing here exercises them.
+  # absent: nothing here exercises them. The graphreader pair carries the remote index.bin the
+  # suite routes over, and valhalla_build_extract builds its tar fixtures.
   pull_request:
     paths:
       - "src/bindings/wasm/**"
       - "test/bindings/wasm/**"
       - valhalla/tyr/actor.h
       - valhalla/baldr/tilegetter.h
+      - valhalla/baldr/graphreader.h
+      - src/baldr/graphreader.cc
+      - scripts/valhalla_build_extract
       - valhalla/exceptions.h
       - valhalla/thor/dijkstras.h
       - src/thor/dijkstras.cc
