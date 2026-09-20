@@ -41,6 +41,7 @@ option(ENABLE_SERVICES "Enable Valhalla services" ON)
 option(ENABLE_HTTP "Enable the use of CURL" ON)
 option(ENABLE_PYTHON_BINDINGS "Enable Python bindings" ON)
 option(ENABLE_NODE_BINDINGS "Enable Node.js bindings" OFF)
+option(ENABLE_WASM_BINDINGS "Enable WebAssembly bindings, requires the Emscripten toolchain" OFF)
 option(ENABLE_CCACHE "Speed up incremental rebuilds via ccache" ON)
 option(ENABLE_COVERAGE "Build with coverage instrumentalisation" OFF)
 option(ENABLE_COMPILER_WARNINGS "Build with compiler warnings" OFF)
@@ -337,6 +338,10 @@ add_subdirectory(src)
 
 if(ENABLE_NODE_BINDINGS)
   add_subdirectory(src/bindings/nodejs)
+endif()
+
+if(ENABLE_WASM_BINDINGS)
+  add_subdirectory(src/bindings/wasm)
 endif()
 
 ## Executable targets
