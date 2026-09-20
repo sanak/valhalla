@@ -183,6 +183,7 @@ void thor_worker_t::centroid(Api& request) {
   valhalla::Location destination;
 
   // get all the routes
+  centroid_gen.set_interrupt(interrupt);
   auto paths =
       centroid_gen.Expand(ExpansionType::forward, request, *reader, mode_costing, mode, destination);
 

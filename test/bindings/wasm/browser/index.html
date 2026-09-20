@@ -1,0 +1,86 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>valhalla wasm browser test</title>
+<script type="module">
+  import { Valhalla } from './index.mjs';
+  const bigIsochroneRequest = {
+    locations: [{ lat: 47.141, lon: 9.521 }],
+    costing: 'auto',
+    contours: [{ time: 60 }],
+  };
+  const routeRequest = {
+    locations: [
+      { lat: 47.141, lon: 9.521 },
+      { lat: 47.165, lon: 9.51 },
+    ],
+    costing: 'auto',
+  };
+  window.run = async (config, cacheDir) => {
+    const v = await Valhalla.create({ workerUrl: './worker.js', config, cacheDir });
+    const route = JSON.parse(
+      await v.route(
+        JSON.stringify({
+          locations: [
+            { lat: 47.141, lon: 9.521 },
+            { lat: 47.165, lon: 9.51 },
+          ],
+          costing: 'auto',
+        }),
+      ),
+    );
+    v.terminate();
+    return route.trip.summary;
+  };
+  // a worker script that 404s never posts back, so create() has to reject on the error event
+  window.badWorker = async () => {
+    try {
+      await Valhalla.create({ workerUrl: './missing-worker.js', config: {}, cacheDir: null });
+      return 'resolved';
+    } catch (e) {
+      return e.name;
+    }
+  };
+  window.abortQueued = async (config) => {
+    const v = await Valhalla.create({ workerUrl: './worker.js', config, cacheDir: null });
+    const ac = new AbortController();
+    const slow = v.isochrone(JSON.stringify(bigIsochroneRequest));
+    const queued = v.route(JSON.stringify(routeRequest), { signal: ac.signal });
+    ac.abort();
+    let name = 'none';
+    try {
+      await queued;
+    } catch (e) {
+      name = e.name;
+    }
+    const firstOk = await slow.then(() => true).catch(() => false);
+    v.terminate();
+    return { name, firstOk };
+  };
+  window.abortInflight = async (config) => {
+    const v = await Valhalla.create({ workerUrl: './worker.js', config, cacheDir: null });
+    const ac = new AbortController();
+    const slow = v.isochrone(JSON.stringify(bigIsochroneRequest), { signal: ac.signal });
+    // the entry occupies the in-flight slot synchronously inside the send, so the abort takes
+    // the in-flight branch whatever the worker is doing - waiting longer only lets it finish
+    await new Promise((r) => setTimeout(r, 0));
+    const t0 = performance.now();
+    ac.abort();
+    let name = 'none';
+    try {
+      await slow;
+    } catch (e) {
+      name = e.name;
+    }
+    const ms = performance.now() - t0;
+    // marks where the caller should start counting range requests for the follow-up alone
+    console.log('valhalla-followup-start');
+    // the instance must survive: a later request has to work on the same object
+    const after = await v.route(JSON.stringify(routeRequest)).then(
+      (r) => JSON.parse(r).trip.summary.length > 0,
+      () => false,
+    );
+    v.terminate();
+    return { name, ms, after, isolated: self.crossOriginIsolated === true };
+  };
+  window.ready = true;
+</script>

@@ -15,6 +15,7 @@
 #include <boost/property_tree/ptree.hpp>
 
 #include <cstdint>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -82,6 +83,10 @@ public:
                                                   const TravelMode)>;
   void set_track_expansion(const expansion_callback_t& expansion_callback) {
     expansion_callback_ = expansion_callback;
+  }
+
+  void set_interrupt(const std::function<void()>* interrupt) {
+    interrupt_ = interrupt;
   }
 
 protected:
@@ -171,7 +176,8 @@ protected:
   // separately from the other paths
   bool multipath_;
 
-  // TODO: add an interrupt here so that the caller can abort the main loop externally
+  // called periodically during expansion; throws when the caller wants to abort
+  const std::function<void()>* interrupt_ = nullptr;
 
   /**
    * Initialization prior to computing the graph expansion

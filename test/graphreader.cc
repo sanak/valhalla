@@ -1,13 +1,18 @@
 #include "baldr/graphreader.h"
 #include "baldr/connectivity_map.h"
 #include "baldr/tilehierarchy.h"
+#include "midgard/sequence.h"
 
 #include <boost/property_tree/ptree.hpp>
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <string>
+#include <unordered_set>
+#include <vector>
 
 using namespace valhalla::baldr;
 
@@ -885,6 +890,204 @@ TEST(CacheLruSoft, TrimOnExactlyFullCache) {
   EXPECT_TRUE(cache.Contains(tile2_id));
   CheckGraphTile(cache.Get(tile1_id), tile1_id, tile1_size);
   CheckGraphTile(cache.Get(tile2_id), tile2_id, tile2_size);
+}
+
+// Answers from a fixed url -> bytes map and records every request, so the remote index tests
+// need neither a tile server nor real tiles.
+class recording_tile_getter_t : public tile_getter_t {
+public:
+  struct request_t {
+    std::string url;
+    uint64_t offset;
+    uint64_t size;
+  };
+
+  std::unordered_map<std::string, bytes_t> responses;
+  std::vector<request_t> requests;
+
+  GET_response_t get(const std::string& url, const uint64_t offset, const uint64_t size) override {
+    requests.push_back({url, offset, size});
+    auto found = responses.find(url);
+    if (found == responses.end()) {
+      return {{}, status_code_t::FAILURE, 404};
+    }
+    return {found->second, status_code_t::SUCCESS, 200};
+  }
+
+  HEAD_response_t head(const std::string&, header_mask_t) override {
+    return {};
+  }
+};
+
+constexpr size_t kIndexEntrySize = 16;
+const std::string kPerTileUrl = "http://localhost/tiles/{tilePath}?token=abc";
+const std::string kIndexUrl = "http://localhost/tiles/index.bin?token=abc";
+const std::string kRemoteIndexTileDir = "test/gphrdr_remote_index";
+
+// index.bin is a flat array of (offset: u64, tile_id: u32, size: u32) entries, tile_id being the
+// level packed into the low 3 bits of the tile index
+std::vector<char> make_index_bin(const std::vector<GraphId>& ids) {
+  std::vector<char> bytes(ids.size() * kIndexEntrySize);
+  char* ptr = bytes.data();
+  uint64_t offset = 1024;
+  for (const auto& id : ids) {
+    const uint32_t tile_id = id.level() | (id.tileid() << 3);
+    const uint32_t size = 2048;
+    std::memcpy(ptr, &offset, sizeof(offset));
+    std::memcpy(ptr + sizeof(offset), &tile_id, sizeof(tile_id));
+    std::memcpy(ptr + sizeof(offset) + sizeof(tile_id), &size, sizeof(size));
+    ptr += kIndexEntrySize;
+    offset += size;
+  }
+  return bytes;
+}
+
+boost::property_tree::ptree per_tile_conf() {
+  boost::property_tree::ptree pt;
+  pt.put("tile_dir", kRemoteIndexTileDir);
+  pt.put("tile_url", kPerTileUrl);
+  return pt;
+}
+
+class RemoteTileIndex : public ::testing::Test {
+protected:
+  void SetUp() override {
+    std::filesystem::remove_all(kRemoteIndexTileDir);
+  }
+  void TearDown() override {
+    std::filesystem::remove_all(kRemoteIndexTileDir);
+  }
+};
+
+TEST_F(RemoteTileIndex, PerTileUrlLoadsIndexBin) {
+  const std::vector<GraphId> ids{{3196, 0, 0}, {51305, 1, 0}, {818660, 2, 0}};
+  auto getter = std::make_unique<recording_tile_getter_t>();
+  getter->responses[kIndexUrl] = make_index_bin(ids);
+
+  GraphReader reader(per_tile_conf(), std::move(getter));
+
+  EXPECT_EQ(reader.GetTileSet(), std::unordered_set<GraphId>(ids.begin(), ids.end()));
+}
+
+TEST_F(RemoteTileIndex, MissingIndexBinLeavesTileSetEmpty) {
+  auto getter = std::make_unique<recording_tile_getter_t>();
+  auto* recorder = getter.get();
+
+  GraphReader reader(per_tile_conf(), std::move(getter));
+
+  ASSERT_EQ(recorder->requests.size(), 1);
+  EXPECT_EQ(recorder->requests[0].url, kIndexUrl);
+  EXPECT_TRUE(reader.GetTileSet().empty());
+}
+
+TEST_F(RemoteTileIndex, IndexedTileIsFetchedWithoutAByteRange) {
+  const GraphId id{818660, 2, 0};
+  auto getter = std::make_unique<recording_tile_getter_t>();
+  getter->responses[kIndexUrl] = make_index_bin({id});
+  auto* recorder = getter.get();
+
+  GraphReader reader(per_tile_conf(), std::move(getter));
+  // nothing is registered for the tile itself, so this 404s rather than building a tile
+  EXPECT_TRUE(reader.GetGraphTile(id) == nullptr);
+
+  ASSERT_EQ(recorder->requests.size(), 2);
+  EXPECT_EQ(recorder->requests[1].url, "http://localhost/tiles/2/000/818/660.gph?token=abc");
+  EXPECT_EQ(recorder->requests[1].size, 0);
+}
+
+TEST_F(RemoteTileIndex, TileMissingFromIndexIsNeverRequested) {
+  auto getter = std::make_unique<recording_tile_getter_t>();
+  getter->responses[kIndexUrl] = make_index_bin({GraphId{818660, 2, 0}});
+  auto* recorder = getter.get();
+
+  GraphReader reader(per_tile_conf(), std::move(getter));
+  EXPECT_TRUE(reader.GetGraphTile(GraphId{200305, 2, 0}) == nullptr);
+
+  ASSERT_EQ(recorder->requests.size(), 1);
+  EXPECT_EQ(recorder->requests[0].url, kIndexUrl);
+}
+
+// a host that answers unknown paths with a 200 page (SPA fallbacks do) must not pass for an index
+TEST_F(RemoteTileIndex, IndexBinOfPartialEntriesIsIgnored) {
+  auto getter = std::make_unique<recording_tile_getter_t>();
+  auto bytes = make_index_bin({GraphId{818660, 2, 0}});
+  bytes.push_back('\n');
+  getter->responses[kIndexUrl] = bytes;
+
+  GraphReader reader(per_tile_conf(), std::move(getter));
+
+  EXPECT_FALSE(reader.HasRemoteTileIndex());
+  EXPECT_TRUE(reader.GetTileSet().empty());
+}
+
+TEST_F(RemoteTileIndex, IndexBinWithInvalidTileIdIsIgnored) {
+  const std::string html = "<!DOCTYPE html><html></html>\n\n\n\n";
+  ASSERT_EQ(html.size() % kIndexEntrySize, 0);
+  auto getter = std::make_unique<recording_tile_getter_t>();
+  getter->responses[kIndexUrl] = std::vector<char>(html.begin(), html.end());
+
+  GraphReader reader(per_tile_conf(), std::move(getter));
+
+  EXPECT_FALSE(reader.HasRemoteTileIndex());
+  EXPECT_TRUE(reader.GetTileSet().empty());
+}
+
+// tiles cached by an earlier run are only part of the tileset, so they must not count as an index
+TEST_F(RemoteTileIndex, CachedTilesAreNotAnIndex) {
+  const auto cached = std::filesystem::path(kRemoteIndexTileDir) / "2/000/818/660.gph";
+  std::filesystem::create_directories(cached.parent_path());
+  std::ofstream(cached) << "tile";
+
+  GraphReader reader(per_tile_conf(), std::make_unique<recording_tile_getter_t>());
+
+  EXPECT_FALSE(reader.GetTileSet().empty());
+  EXPECT_FALSE(reader.HasRemoteTileIndex());
+}
+
+TEST_F(RemoteTileIndex, LoadedIndexBinIsReported) {
+  auto getter = std::make_unique<recording_tile_getter_t>();
+  getter->responses[kIndexUrl] = make_index_bin({GraphId{818660, 2, 0}});
+
+  GraphReader reader(per_tile_conf(), std::move(getter));
+
+  EXPECT_TRUE(reader.HasRemoteTileIndex());
+}
+
+const std::string kTarUrl = "http://localhost/tiles.tar";
+
+boost::property_tree::ptree tar_conf() {
+  boost::property_tree::ptree pt;
+  pt.put("tile_url", kTarUrl);
+  return pt;
+}
+
+std::string tar_url_error(const std::vector<char>& first_bytes) {
+  auto getter = std::make_unique<recording_tile_getter_t>();
+  getter->responses[kTarUrl] = first_bytes;
+  try {
+    GraphReader reader(tar_conf(), std::move(getter));
+  } catch (const std::runtime_error& e) {
+    return e.what();
+  }
+  return "";
+}
+
+TEST(RemoteTar, GzippedTarIsNamedAsSuch) {
+  std::vector<char> gzipped_tar(sizeof(valhalla::midgard::tar::header_t), '\0');
+  gzipped_tar[0] = '\x1f';
+  gzipped_tar[1] = '\x8b';
+  const auto error = tar_url_error(gzipped_tar);
+
+  EXPECT_NE(error.find("gzipped"), std::string::npos);
+  // the tar on disk may well be plain and the server compressing it on the wire, so say both
+  EXPECT_NE(error.find("transport compression"), std::string::npos);
+}
+
+TEST(RemoteTar, ShortResponseIsNotReadAsATarHeader) {
+  const std::string body{"<html>not a tar</html>"};
+  const auto error = tar_url_error({body.begin(), body.end()});
+
+  EXPECT_NE(error.find(std::to_string(body.size())), std::string::npos);
 }
 
 } // namespace

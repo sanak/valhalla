@@ -36,6 +36,7 @@ std::string thor_worker_t::isochrones(Api& request) {
   auto expansion_type = costing == "multimodal" || costing == "transit"
                             ? ExpansionType::multimodal
                             : (reverse ? ExpansionType::reverse : ExpansionType::forward);
+  isochrone_gen.set_interrupt(interrupt);
   auto grid = isochrone_gen.Expand(expansion_type, request, *reader, mode_costing, mode);
 
   // e.g. in case of /expansion request

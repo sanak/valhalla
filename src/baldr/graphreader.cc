@@ -1,4 +1,5 @@
 #include "baldr/graphreader.h"
+#include "baldr/compression_utils.h"
 #include "baldr/curl_tilegetter.h"
 #include "incident_singleton.h"
 #include "midgard/encoded.h"
@@ -88,6 +89,16 @@ GraphReader::tile_extract_t::tile_extract_t(const boost::property_tree::ptree& p
     try {
       archive = std::make_shared<midgard::tar>(pt.get<std::string>("tile_extract"));
       auto corrupt_blocks = load_tiles(*archive, tiles);
+      // valhalla_build_extract --gzip output only decompresses on the tile_url path, mapped as is
+      // it would hand out gzip bytes as tiles
+      if (!tiles.empty()) {
+        const auto* first = reinterpret_cast<const uint8_t*>(tiles.begin()->second.first);
+        if (tiles.begin()->second.second >= 2 && first[0] == 0x1f && first[1] == 0x8b) {
+          LOG_ERROR("Tile extract holds gzipped tiles, serve it as mjolnir.tile_url with "
+                    "mjolnir.tile_url_gz instead");
+          tiles.clear();
+        }
+      }
       if (scan_tar) {
         checksum = 0;
         for (const auto& kv : tiles) {
@@ -140,6 +151,14 @@ void GraphReader::load_remote_tar_offsets() {
   // get the tar header of the first file so we know with which range to download index.bin
   auto first_file_resp =
       CURL_OR_THROW(tile_getter_->get(tile_url_, 0, sizeof(tar::header_t)), tile_url_);
+  if (is_gzipped(first_file_resp.bytes_)) {
+    throw std::runtime_error("The remote tar at " + tile_url_ +
+                             " arrived gzipped, check both the tar itself and the server's "
+                             "transport compression");
+  } else if (first_file_resp.bytes_.size() < sizeof(tar::header_t)) {
+    throw std::runtime_error("Got " + std::to_string(first_file_resp.bytes_.size()) +
+                             " bytes from " + tile_url_ + ", too few for a tar header");
+  }
   auto first_file_header = reinterpret_cast<tar::header_t*>(first_file_resp.bytes_.data());
 
   // verify the first file is indeed the index.bin
@@ -151,23 +170,53 @@ void GraphReader::load_remote_tar_offsets() {
                              tile_url_);
   }
 
-  // fetch the index.bin and read its content into remote_tar_offsets
+  // fetch the index.bin and read its content into remote_tile_index_
   auto index_bin_response = CURL_OR_THROW(tile_getter_->get(tile_url_, sizeof(tar::header_t),
                                                             first_file_header->get_file_size()),
                                           tile_url_);
-  const auto index_bin_size = index_bin_response.bytes_.size() / sizeof(tile_index_entry);
-
-  remote_tar_offsets_.reserve(index_bin_size);
-  const auto entries =
-      std::span(reinterpret_cast<tile_index_entry*>(index_bin_response.bytes_.data()),
-                index_bin_size);
-  for (const auto& entry : entries) {
-    remote_tar_offsets_.insert({GraphId{entry.tile_id}, {entry.offset, entry.size}});
-  }
-  if (remote_tar_offsets_.size() == 0) {
-    throw std::runtime_error("The 'index.bin' doesn't contain any data at " + tile_url_);
+  if (!parse_remote_tile_index(index_bin_response.bytes_)) {
+    throw std::runtime_error("The 'index.bin' is empty or malformed at " + tile_url_);
   }
 };
+
+bool GraphReader::parse_remote_tile_index(const tile_getter_t::bytes_t& bytes) {
+  if (bytes.empty() || bytes.size() % sizeof(tile_index_entry) != 0) {
+    return false;
+  }
+  const auto entries = std::span(reinterpret_cast<const tile_index_entry*>(bytes.data()),
+                                 bytes.size() / sizeof(tile_index_entry));
+  remote_tile_index_t index;
+  index.reserve(entries.size());
+  for (const auto& entry : entries) {
+    const GraphId id{entry.tile_id};
+    const auto& transit = TileHierarchy::GetTransitLevel();
+    if (id.level() > transit.level || id.id() != 0) {
+      return false;
+    }
+    const auto& level = id.level() == transit.level ? transit : TileHierarchy::levels()[id.level()];
+    if (id.tileid() >= level.tiles.TileCount()) {
+      return false;
+    }
+    index.insert({id, {entry.offset, entry.size}});
+  }
+  remote_tile_index_ = std::move(index);
+  return true;
+}
+
+// a plain tile URL has no listing, so an index.bin next to the tiles is the only way to learn the
+// tileset's extent; it's optional, without it loki's connectivity map comes out empty
+void GraphReader::load_remote_tile_index() {
+  const auto index_url = make_single_point_url(tile_url_, "index.bin");
+  auto response = tile_getter_->get(index_url);
+  if (response.status_ != tile_getter_t::status_code_t::SUCCESS) {
+    LOG_INFO("No index.bin at " + index_url + ", the remote tileset's extent is unknown");
+  } else if (is_gzipped(response.bytes_)) {
+    LOG_WARN("Ignoring " + index_url +
+             ", it arrived gzipped, check both the file and the server's transport compression");
+  } else if (!parse_remote_tile_index(response.bytes_)) {
+    LOG_WARN("Ignoring " + index_url + ", it is not a valid index.bin");
+  }
+}
 
 // ----------------------------------------------------------------------------
 // FlatTileCache implementation
@@ -503,6 +552,8 @@ GraphReader::GraphReader(const boost::property_tree::ptree& pt,
     }
     if (is_tar_url_) {
       load_remote_tar_offsets();
+    } else {
+      load_remote_tile_index();
     }
     // we allow to not cache tiles locally from URL
     if (!tile_dir_.empty()) {
@@ -642,13 +693,14 @@ graph_tile_ptr GraphReader::GetGraphTile(const GraphId& graphid) {
       }
     }
 
-    const auto pos = remote_tar_offsets_.find(base);
-    const bool tar_has_tile = pos != remote_tar_offsets_.end();
-    uint64_t tar_offset = tar_has_tile ? pos->second.offset : 0;
-    uint64_t tar_size = tar_has_tile ? pos->second.size : 0;
+    const auto pos = remote_tile_index_.find(base);
+    const bool indexed = pos != remote_tile_index_.end();
+    // only a tar turns the entry into a byte range, a plain tile URL addresses the tile directly
+    uint64_t tar_offset = is_tar_url_ && indexed ? pos->second.offset : 0;
+    uint64_t tar_size = is_tar_url_ && indexed ? pos->second.size : 0;
     tile = nullptr;
-    // either we find its tar offset or it's a plain tiles URL
-    if (tar_has_tile || !is_tar_url_) {
+    // an index tells us exactly which tiles exist, without one we ask and let the 404 answer
+    if (indexed || remote_tile_index_.empty()) {
       tile = GraphTile::CacheTileURL(tile_url_, base, tile_getter_.get(), tile_dir_, tar_offset,
                                      tar_size, url_id_txt_path_, url_id_txt_checksum_);
     }
@@ -966,6 +1018,11 @@ std::unordered_set<GraphId> GraphReader::GetTileSet() const {
     for (const auto& t : tile_extract_->tiles) {
       tiles.emplace(t.first);
     }
+  } // or the remote index.bin, which lists the whole tileset before anything is cached
+  else if (!remote_tile_index_.empty()) {
+    for (const auto& t : remote_tile_index_) {
+      tiles.emplace(t.first);
+    }
   } // or individually on disk
   else if (!tile_dir_.empty()) {
     // for each level
@@ -998,6 +1055,12 @@ std::unordered_set<GraphId> GraphReader::GetTileSet(const uint8_t level) const {
   if (tile_extract_->tiles.size()) {
     for (const auto& t : tile_extract_->tiles) {
       if (static_cast<GraphId>(t.first).level() == level) {
+        tiles.emplace(t.first);
+      }
+    } // or the remote index.bin
+  } else if (!remote_tile_index_.empty()) {
+    for (const auto& t : remote_tile_index_) {
+      if (t.first.level() == level) {
         tiles.emplace(t.first);
       }
     } // or individually on disk

@@ -223,6 +223,17 @@ void store(const std::string& cache_location,
   }
 }
 
+// only a body that parses as a tile proves the tileset is served uncompressed, anything else is
+// just a bad response
+bool is_plain_tile(const GraphId& graphid, const std::vector<char>& bytes) {
+  try {
+    GraphTile::Create(graphid, std::vector<char>(bytes));
+    return true;
+  } catch (const std::runtime_error&) {
+    return false;
+  }
+}
+
 graph_tile_ptr GraphTile::CacheTileURL(const std::string& tile_url,
                                        const GraphId& graphid,
                                        tile_getter_t* tile_getter,
@@ -279,26 +290,43 @@ graph_tile_ptr GraphTile::CacheTileURL(const std::string& tile_url,
     return nullptr;
   }
 
-  if (!tile_getter->gzipped()) {
-    // inspect the header for the checksum
-    // it's a POD type and thus trivially copyable
-    GraphTileHeader header;
-    std::memcpy(&header, result.bytes_.data(), sizeof(header));
-    check_tile_checksum(header);
+  // 1f 8b can't collide with a tile's first byte, whose lowest 3 bits would decode as hierarchy
+  // level 7, so the magic proves a gzipped tileset. its absence proves nothing on its own, hence
+  // the parse: without this the wrong setting only surfaces as a failed gunzip or a garbage header
+  if (const bool compressed = is_gzipped(result.bytes_); compressed != tile_getter->gzipped()) {
+    if (compressed) {
+      throw valhalla_exception_t(447,
+                                 "the response from " + tile_url + " is gzipped, set it to true");
+    } else if (is_plain_tile(graphid, result.bytes_)) {
+      throw valhalla_exception_t(447, "the response from " + tile_url +
+                                          " is not gzipped, set it to false");
+    }
+    return nullptr;
   }
+
+  // turn the memory into a tile. the c-tor is what rejects a body that isn't one, and neither the
+  // checksum bookkeeping nor the disk cache may see bytes that haven't cleared it: both outlive
+  // the request, so a single junk response would otherwise brick the tile_dir
+  graph_tile_ptr tile;
+  if (tile_getter->gzipped()) {
+    tile = DecompressTile(graphid, result.bytes_);
+    if (!tile) {
+      return nullptr;
+    }
+  } else {
+    // the tile can take the bytes outright unless store() still has to write them to disk
+    auto memory = std::make_unique<const VectorGraphMemory>(tile_dir.empty()
+                                                                ? std::move(result.bytes_)
+                                                                : result.bytes_);
+    tile = graph_tile_ptr{new GraphTile(graphid, std::move(memory))};
+  }
+
+  check_tile_checksum(*tile->header());
 
   // try to cache it on disk so we dont have to keep fetching it from url
   store(tile_dir, graphid, tile_getter, result.bytes_);
 
-  // turn the memory into a tile
-  if (tile_getter->gzipped()) {
-    auto tile = DecompressTile(graphid, result.bytes_);
-    check_tile_checksum(*tile.get()->header());
-    return tile;
-  }
-
-  return graph_tile_ptr{
-      new GraphTile(graphid, std::make_unique<const VectorGraphMemory>(std::move(result.bytes_)))};
+  return tile;
 }
 
 GraphTile::~GraphTile() = default;

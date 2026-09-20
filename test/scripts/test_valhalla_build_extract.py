@@ -1,4 +1,5 @@
 import ctypes
+import gzip
 from io import BytesIO
 import json
 from math import ceil, floor
@@ -46,6 +47,12 @@ def tile_base_to_path(base_x: int, base_y: int, level: int, fake_dir: Path) -> P
     path = str(level) + "{:,}".format(int(pow(10, TAR_PATH_LENGTHS[level])) + tile_id).replace(",", os.sep)[1:]
 
     return Path(path + ".gph")
+
+
+def tile_base_path(level: int, idx: int) -> Path:
+    """Turn a level and tile index into the relative tile path, as in GraphTile::FileSuffix."""
+    digits = str(int(pow(10, TAR_PATH_LENGTHS[level])) + idx)[1:]
+    return Path(str(level), *[digits[i:i + 3] for i in range(0, len(digits), 3)]).with_suffix('.gph')
 
 
 class TestBuildExtract(unittest.TestCase):
@@ -212,6 +219,47 @@ class TestBuildExtract(unittest.TestCase):
         tile_resolver.matched_paths = tile_resolver.normalized_tile_paths
         valhalla_build_extract.create_extracts(config, True, tile_resolver, new_tile_extract)
         self.check_tar(new_tile_extract, exp_tile_offsets_and_sizes, tile_count * INDEX_BIN_SIZE)
+
+    def test_create_gzipped_extract(self):
+        gz_extract = TILE_PATH.joinpath('tiles_gz_test.tar')
+        config = {"mjolnir": {"tile_dir": str(TILE_PATH)}}
+        tile_resolver = TileResolver(TILE_PATH)
+        tile_resolver.matched_paths = tile_resolver.normalized_tile_paths
+        with self.assertRaises(SystemExit) as ctx:
+            valhalla_build_extract.create_extracts(config, False, tile_resolver, gz_extract, gzip_tiles=True)
+        self.assertEqual(ctx.exception.code, 0)
+
+        with open(gz_extract, 'rb') as f:
+            index_member_size = len(tile_resolver.matched_paths) * INDEX_BIN_SIZE
+            f.seek(tarfile.BLOCKSIZE)
+            index = [struct.unpack(INDEX_BIN_FORMAT, f.read(INDEX_BIN_SIZE))
+                     for _ in range(index_member_size // INDEX_BIN_SIZE)]
+            # every entry points at a gzip member whose content is the untouched tile
+            for offset, tile_id, size in index:
+                f.seek(offset)
+                data = f.read(size)
+                self.assertEqual(data[:2], b'\x1f\x8b')
+                level = tile_id & 0x7
+                idx = tile_id >> 3
+                rel = tile_base_path(level, idx)
+                self.assertEqual(gzip.decompress(data), TILE_PATH.joinpath(rel).read_bytes())
+
+        with tarfile.open(gz_extract) as tar:
+            names = [m.name for m in tar.getmembers()]
+        self.assertEqual(names[0], 'index.bin')
+        self.assertTrue(all(n.endswith('.gph.gz') for n in names[1:]))
+        self.assertEqual(len(index), len(names) - 1)
+        gz_extract.unlink()
+
+    def test_gzipped_extract_refuses_traffic(self):
+        gz_extract = TILE_PATH.joinpath('tiles_gz_traffic_test.tar')
+        config = {"mjolnir": {"tile_dir": str(TILE_PATH)}}
+        tile_resolver = TileResolver(TILE_PATH)
+        tile_resolver.matched_paths = tile_resolver.normalized_tile_paths
+        with self.assertRaises(SystemExit) as ctx:
+            valhalla_build_extract.create_extracts(config, True, tile_resolver, gz_extract, gzip_tiles=True)
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertFalse(gz_extract.exists())
 
     def check_tar(self, p: Path, exp_tuples, end_index):
         with open(p, 'r+b') as f:
