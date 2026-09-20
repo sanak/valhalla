@@ -1,14 +1,18 @@
 #include "baldr/graphtile.h"
 #include "baldr/complexrestriction.h"
+#include "baldr/compression_utils.h"
+#include "baldr/tilegetter.h"
 #include "config.h"
 #include "midgard/pointll.h"
 #include "midgard/tiles.h"
 #include "mjolnir/complexrestrictionbuilder.h"
+#include "valhalla/exceptions.h"
 
 #include <gtest/gtest.h>
 
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <sstream>
 #include <vector>
 
@@ -326,6 +330,214 @@ TEST(ComplexRestrictionView, ModeFiltering) {
     count3++;
   }
   EXPECT_EQ(count3, 3);
+}
+
+// serves a single canned response so CacheTileURL can be driven without a tile server
+struct canned_tile_getter_t : public tile_getter_t {
+  canned_tile_getter_t(std::vector<char> bytes, bool gzipped)
+      : bytes_(std::move(bytes)), gzipped_(gzipped) {
+  }
+  GET_response_t get(const std::string&, const uint64_t, const uint64_t) override {
+    return {bytes_, status_code_t::SUCCESS, 200};
+  }
+  HEAD_response_t head(const std::string&, header_mask_t) override {
+    return {};
+  }
+  bool gzipped() const override {
+    return gzipped_;
+  }
+
+  std::vector<char> bytes_;
+  bool gzipped_;
+};
+
+const GraphId kUrlTileId{3196, 0, 0};
+
+std::vector<char> read_utrecht_tile() {
+  const auto path = std::string(VALHALLA_BUILD_DIR "test/data/utrecht_tiles/") +
+                    GraphTile::FileSuffix(kUrlTileId);
+  std::ifstream file(path, std::ios::binary | std::ios::ate);
+  if (!file) {
+    throw std::runtime_error("missing test fixture " + path + ", build the utrecht_tiles target");
+  }
+  std::vector<char> bytes(file.tellg());
+  file.seekg(0);
+  if (!file.read(bytes.data(), bytes.size())) {
+    throw std::runtime_error("could not read " + path);
+  }
+  return bytes;
+}
+
+std::vector<char> gzip(const std::vector<char>& raw) {
+  std::vector<char> compressed;
+  auto src = [&raw](z_stream& s) -> int {
+    s.next_in = const_cast<Byte*>(reinterpret_cast<const Byte*>(raw.data()));
+    s.avail_in = static_cast<unsigned int>(raw.size());
+    return Z_FINISH;
+  };
+  auto dst = [&compressed, &raw](z_stream& s) {
+    auto size = compressed.size();
+    if (s.total_out < size) {
+      compressed.resize(s.total_out);
+    } else {
+      compressed.resize(size + raw.size());
+      s.next_out = reinterpret_cast<Byte*>(compressed.data() + size);
+      s.avail_out = static_cast<unsigned int>(raw.size());
+    }
+  };
+  if (!valhalla::baldr::deflate(src, dst)) {
+    throw std::runtime_error("failed to gzip the test tile");
+  }
+  return compressed;
+}
+
+struct url_error_t {
+  unsigned code = 0; // 0 when the throw carried no valhalla error code
+  std::string message;
+};
+
+url_error_t cache_tile_url_error(std::vector<char> response,
+                                 bool tile_url_gz,
+                                 const std::string& tile_dir = "") {
+  canned_tile_getter_t getter(std::move(response), tile_url_gz);
+  try {
+    GraphTile::CacheTileURL("127.0.0.1/tiles", kUrlTileId, &getter, tile_dir);
+  } catch (const valhalla::valhalla_exception_t& e) {
+    return {e.code, e.message};
+  } catch (const std::runtime_error& e) {
+    return {0, e.what()};
+  }
+  return {};
+}
+
+TEST(GraphTileUrl, GzippedResponseWithoutTileUrlGz) {
+  const auto error = cache_tile_url_error(gzip(read_utrecht_tile()), false);
+
+  EXPECT_EQ(error.code, 447);
+  EXPECT_EQ(error.message, "Remote tile compression does not match mjolnir.tile_url_gz: the "
+                           "response from 127.0.0.1/tiles is gzipped, set it to true");
+}
+
+TEST(GraphTileUrl, PlainResponseWithTileUrlGz) {
+  const auto error = cache_tile_url_error(read_utrecht_tile(), true);
+
+  EXPECT_EQ(error.code, 447);
+  EXPECT_EQ(error.message, "Remote tile compression does not match mjolnir.tile_url_gz: the "
+                           "response from 127.0.0.1/tiles is not gzipped, set it to false");
+}
+
+TEST(GraphTileUrl, MatchingCompressionIsAccepted) {
+  auto raw = read_utrecht_tile();
+
+  canned_tile_getter_t plain(raw, false);
+  EXPECT_TRUE(GraphTile::CacheTileURL("127.0.0.1/tiles", kUrlTileId, &plain, ""));
+
+  canned_tile_getter_t gzipped(gzip(raw), true);
+  EXPECT_TRUE(GraphTile::CacheTileURL("127.0.0.1/tiles", kUrlTileId, &gzipped, ""));
+}
+
+class UrlTileCache : public ::testing::Test {
+protected:
+  const std::string tile_dir = VALHALLA_BUILD_DIR "test/data/url_tile_cache_test";
+
+  void SetUp() override {
+    std::filesystem::remove_all(tile_dir);
+  }
+  void TearDown() override {
+    std::filesystem::remove_all(tile_dir);
+  }
+};
+
+TEST_F(UrlTileCache, MismatchLeavesTheDiskCacheAlone) {
+  EXPECT_EQ(cache_tile_url_error(gzip(read_utrecht_tile()), false, tile_dir).code, 447);
+  EXPECT_FALSE(std::filesystem::exists(tile_dir));
+}
+
+TEST_F(UrlTileCache, ErrorPageIsNotCached) {
+  // long enough to clear the header size guard, so only the tile itself can reject it; caching it
+  // would make every later process start throw on the same file
+  const std::string error_page(1024, 'x');
+
+  EXPECT_EQ(cache_tile_url_error({error_page.begin(), error_page.end()}, false, tile_dir).code, 0);
+  EXPECT_FALSE(std::filesystem::exists(tile_dir));
+}
+
+TEST_F(UrlTileCache, CorruptGzippedResponseIsNotCached) {
+  const std::vector<char> corrupt{'\x1f', '\x8b', '\x08', '\x00', 'n', 'o', 'p', 'e'};
+  canned_tile_getter_t getter(corrupt, true);
+
+  EXPECT_FALSE(GraphTile::CacheTileURL("127.0.0.1/tiles", kUrlTileId, &getter, tile_dir));
+  EXPECT_FALSE(std::filesystem::exists(tile_dir));
+}
+
+TEST_F(UrlTileCache, ErrorPageDoesNotWriteIdTxt) {
+  // a junk build id in id.txt makes every later valid tile trip the 446 "tar has changed" check
+  const std::string error_page(1024, 'x');
+  canned_tile_getter_t getter({error_page.begin(), error_page.end()}, false);
+  std::filesystem::create_directories(tile_dir);
+  const auto id_txt = std::filesystem::path(tile_dir) / "id.txt";
+
+  EXPECT_THROW(GraphTile::CacheTileURL("127.0.0.1/tiles", kUrlTileId, &getter, tile_dir, 0, 0,
+                                       id_txt),
+               std::runtime_error);
+  EXPECT_FALSE(std::filesystem::exists(id_txt));
+}
+
+TEST_F(UrlTileCache, ValidTileWritesIdTxt) {
+  canned_tile_getter_t getter(read_utrecht_tile(), false);
+  std::filesystem::create_directories(tile_dir);
+  const auto id_txt = std::filesystem::path(tile_dir) / "id.txt";
+
+  EXPECT_TRUE(
+      GraphTile::CacheTileURL("127.0.0.1/tiles", kUrlTileId, &getter, tile_dir, 0, 0, id_txt));
+  EXPECT_TRUE(std::filesystem::exists(id_txt));
+}
+
+TEST_F(UrlTileCache, ValidTileIsCached) {
+  canned_tile_getter_t getter(read_utrecht_tile(), false);
+
+  EXPECT_TRUE(GraphTile::CacheTileURL("127.0.0.1/tiles", kUrlTileId, &getter, tile_dir));
+  EXPECT_TRUE(
+      std::filesystem::exists(tile_dir + "/" + GraphTile::FileSuffix(kUrlTileId)));
+}
+
+TEST_F(UrlTileCache, ValidGzippedTileIsCachedCompressed) {
+  canned_tile_getter_t getter(gzip(read_utrecht_tile()), true);
+
+  EXPECT_TRUE(GraphTile::CacheTileURL("127.0.0.1/tiles", kUrlTileId, &getter, tile_dir));
+  EXPECT_TRUE(std::filesystem::exists(tile_dir + "/" +
+                                      GraphTile::FileSuffix(kUrlTileId, SUFFIX_COMPRESSED)));
+}
+
+TEST(GraphTileUrl, CorruptGzippedResponse) {
+  // gzip magic with a garbage payload: the failed inflate must not be dereferenced
+  const std::vector<char> corrupt{'\x1f', '\x8b', '\x08', '\x00', 'n', 'o', 'p', 'e'};
+  canned_tile_getter_t getter(corrupt, true);
+  EXPECT_FALSE(GraphTile::CacheTileURL("127.0.0.1/tiles", kUrlTileId, &getter, ""));
+}
+
+TEST(GraphTileUrl, ResponseTooShortForAHeader) {
+  // an error page served in place of a tile must not be read into a GraphTileHeader
+  const std::string body{"<html>not a tile</html>"};
+  const auto error = cache_tile_url_error({body.begin(), body.end()}, false);
+
+  EXPECT_EQ(error.code, 0);
+  EXPECT_NE(error.message.find(std::to_string(body.size())), std::string::npos);
+}
+
+TEST(GraphTileUrl, TruncatedResponseIsNotACompressionMismatch) {
+  // one byte can't be a tile, so it's a response to retry rather than a reason to blame the config
+  canned_tile_getter_t getter({'\x1f'}, true);
+
+  EXPECT_FALSE(GraphTile::CacheTileURL("127.0.0.1/tiles", kUrlTileId, &getter, ""));
+}
+
+TEST(GraphTileUrl, NonTileResponseWithTileUrlGzIsNotACompressionMismatch) {
+  // only a body that parses as a tile proves the tileset is served uncompressed
+  const std::string error_page(1024, 'x');
+  canned_tile_getter_t getter({error_page.begin(), error_page.end()}, true);
+
+  EXPECT_FALSE(GraphTile::CacheTileURL("127.0.0.1/tiles", kUrlTileId, &getter, ""));
 }
 
 } // namespace

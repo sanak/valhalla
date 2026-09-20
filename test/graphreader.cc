@@ -1,6 +1,7 @@
 #include "baldr/graphreader.h"
 #include "baldr/connectivity_map.h"
 #include "baldr/tilehierarchy.h"
+#include "midgard/sequence.h"
 
 #include <boost/property_tree/ptree.hpp>
 #include <gtest/gtest.h>
@@ -1050,6 +1051,43 @@ TEST_F(RemoteTileIndex, LoadedIndexBinIsReported) {
   GraphReader reader(per_tile_conf(), std::move(getter));
 
   EXPECT_TRUE(reader.HasRemoteTileIndex());
+}
+
+const std::string kTarUrl = "http://localhost/tiles.tar";
+
+boost::property_tree::ptree tar_conf() {
+  boost::property_tree::ptree pt;
+  pt.put("tile_url", kTarUrl);
+  return pt;
+}
+
+std::string tar_url_error(const std::vector<char>& first_bytes) {
+  auto getter = std::make_unique<recording_tile_getter_t>();
+  getter->responses[kTarUrl] = first_bytes;
+  try {
+    GraphReader reader(tar_conf(), std::move(getter));
+  } catch (const std::runtime_error& e) {
+    return e.what();
+  }
+  return "";
+}
+
+TEST(RemoteTar, GzippedTarIsNamedAsSuch) {
+  std::vector<char> gzipped_tar(sizeof(valhalla::midgard::tar::header_t), '\0');
+  gzipped_tar[0] = '\x1f';
+  gzipped_tar[1] = '\x8b';
+  const auto error = tar_url_error(gzipped_tar);
+
+  EXPECT_NE(error.find("gzipped"), std::string::npos);
+  // the tar on disk may well be plain and the server compressing it on the wire, so say both
+  EXPECT_NE(error.find("transport compression"), std::string::npos);
+}
+
+TEST(RemoteTar, ShortResponseIsNotReadAsATarHeader) {
+  const std::string body{"<html>not a tar</html>"};
+  const auto error = tar_url_error({body.begin(), body.end()});
+
+  EXPECT_NE(error.find(std::to_string(body.size())), std::string::npos);
 }
 
 } // namespace

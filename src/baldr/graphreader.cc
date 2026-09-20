@@ -1,4 +1,5 @@
 #include "baldr/graphreader.h"
+#include "baldr/compression_utils.h"
 #include "baldr/curl_tilegetter.h"
 #include "incident_singleton.h"
 #include "midgard/encoded.h"
@@ -150,6 +151,14 @@ void GraphReader::load_remote_tar_offsets() {
   // get the tar header of the first file so we know with which range to download index.bin
   auto first_file_resp =
       CURL_OR_THROW(tile_getter_->get(tile_url_, 0, sizeof(tar::header_t)), tile_url_);
+  if (is_gzipped(first_file_resp.bytes_)) {
+    throw std::runtime_error("The remote tar at " + tile_url_ +
+                             " arrived gzipped, check both the tar itself and the server's "
+                             "transport compression");
+  } else if (first_file_resp.bytes_.size() < sizeof(tar::header_t)) {
+    throw std::runtime_error("Got " + std::to_string(first_file_resp.bytes_.size()) +
+                             " bytes from " + tile_url_ + ", too few for a tar header");
+  }
   auto first_file_header = reinterpret_cast<tar::header_t*>(first_file_resp.bytes_.data());
 
   // verify the first file is indeed the index.bin
@@ -201,8 +210,11 @@ void GraphReader::load_remote_tile_index() {
   auto response = tile_getter_->get(index_url);
   if (response.status_ != tile_getter_t::status_code_t::SUCCESS) {
     LOG_INFO("No index.bin at " + index_url + ", the remote tileset's extent is unknown");
+  } else if (is_gzipped(response.bytes_)) {
+    LOG_WARN("Ignoring " + index_url +
+             ", it arrived gzipped, check both the file and the server's transport compression");
   } else if (!parse_remote_tile_index(response.bytes_)) {
-    LOG_WARN("Ignoring " + index_url + ", it is not a valid index.bin (served compressed?)");
+    LOG_WARN("Ignoring " + index_url + ", it is not a valid index.bin");
   }
 }
 
