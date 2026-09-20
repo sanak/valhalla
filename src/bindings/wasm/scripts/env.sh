@@ -14,13 +14,24 @@ export WASM_BUILD_ROOT="${WASM_BUILD_ROOT:-${VALHALLA_SRC}/build-wasm}"
 export PREFIX="${WASM_BUILD_ROOT}/prefix"
 # the odin locales step imports polib; keep it out of the system python
 export WASM_PYTHON="${WASM_PYTHON:-${WASM_BUILD_ROOT}/venv-polib/bin/python3}"
-export BOOST_INCLUDE="${BOOST_INCLUDE:-$(brew --prefix boost 2>/dev/null || echo /usr)/include}"
+BOOST_ROOT_INCLUDE="${BOOST_INCLUDE:-$(brew --prefix boost 2>/dev/null || echo /usr)/include}"
 # every object in the link must agree on the exception scheme
 export EH_FLAGS="-fwasm-exceptions"
 # not EMSDK_*: `emsdk construct_env` unsets every EMSDK_ variable it does not own
 export WASM_EMSDK="${WASM_EMSDK:-${WASM_BUILD_ROOT}/emsdk}"
 
 mkdir -p "${WASM_BUILD_ROOT}" "${PREFIX}"
+
+# CMake turns Boost_INCLUDE_DIR into an -isystem for every object, so it must name a directory
+# holding nothing but boost/. On linux that is /usr/include, where emscripten's libc++ then finds
+# glibc's stdint.h and the build dies on bits/libc-header-start.h.
+if [ -d "${BOOST_ROOT_INCLUDE}/boost" ]; then
+  mkdir -p "${WASM_BUILD_ROOT}/boost-include"
+  ln -sfn "${BOOST_ROOT_INCLUDE}/boost" "${WASM_BUILD_ROOT}/boost-include/boost"
+  export BOOST_INCLUDE="${WASM_BUILD_ROOT}/boost-include"
+else
+  export BOOST_INCLUDE="${BOOST_ROOT_INCLUDE}"
+fi
 
 if [ ! -f "${WASM_EMSDK}/emsdk_env.sh" ]; then
   echo "### installing emsdk ${EMSDK_VERSION} into ${WASM_EMSDK}"

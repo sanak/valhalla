@@ -103,6 +103,11 @@ Each of these cost a build cycle:
   protoc stamps `#if PROTOBUF_VERSION != <n>` into every generated `.pb.h`. `versions.env`
   fixes both, so leave `HOST_PROTOC` unset unless you know the versions agree.
 - **Every object needs `-fwasm-exceptions`**, protobuf and abseil included, or the link fails.
+- **`Boost_INCLUDE_DIR` must name a directory holding nothing but `boost/`.** CMake turns it into
+  an `-isystem` for every object, so handing it a system include dir — `/usr/include` on linux,
+  where `libboost-dev` puts the headers — lets emscripten's libc++ pick up glibc's `stdint.h` and
+  the build dies on `bits/libc-header-start.h`. `env.sh` symlinks `boost/` into
+  `build-wasm/boost-include` and points at that.
 - **`loki.use_connectivity` needs a tileset listing.** The connectivity map only needs the list of
   tiles, which `GetTileSet()` takes from `index.bin`: a remote tar carries one, and a `{tilePath}`
   URL gets one when `index.bin` is published next to the tiles. Without it `GetTileSet()` falls
