@@ -1,4 +1,5 @@
 #include "tyr/actor.h"
+#include "baldr/graphreader.h"
 #include "test.h"
 #include "valhalla/exceptions.h"
 
@@ -6,6 +7,7 @@
 #include <vtzero/vector_tile.hpp>
 
 #include <functional>
+#include <map>
 #include <string>
 
 #if !defined(VALHALLA_SOURCE_DIR)
@@ -105,6 +107,56 @@ TEST(Actor, TraceRouteInterruptIsNotSwallowed) {
         {"lat":40.544232,"lon":-76.385752}],"costing":"auto","shape_match":"walk_or_snap"})";
   std::function<void()> interrupt = [] { throw interrupt_exception_t{}; };
   EXPECT_THROW(actor.trace_route(request, &interrupt), interrupt_exception_t);
+}
+
+// stands in for GraphTile::CacheTileURL reporting a changed remote tar (446)
+class failing_reader_t : public baldr::GraphReader {
+public:
+  using baldr::GraphReader::GetGraphTile;
+  using baldr::GraphReader::GraphReader;
+  baldr::graph_tile_ptr GetGraphTile(const baldr::GraphId& id) override {
+    if (armed) {
+      throw valhalla_exception_t{446};
+    }
+    return baldr::GraphReader::GetGraphTile(id);
+  }
+  bool armed = false;
+};
+
+TEST(Actor, TileFailureIsNotMaskedAs171) {
+  failing_reader_t reader(conf.get_child("mjolnir"));
+  tyr::actor_t actor(conf, reader);
+  reader.armed = true;
+
+  const std::map<std::string, std::function<void()>> actions{
+      {"route",
+       [&] {
+         actor.route(R"({"locations":[{"lat":40.546115,"lon":-76.385076},
+             {"lat":40.544232,"lon":-76.385752}],"costing":"auto"})");
+       }},
+      {"isochrone",
+       [&] {
+         actor.isochrone(R"({"locations":[{"lat":40.546115,"lon":-76.385076}],
+             "costing":"auto","contours":[{"time":5}]})");
+       }},
+      {"matrix",
+       [&] {
+         actor.matrix(R"({"sources":[{"lat":40.546115,"lon":-76.385076}],
+             "targets":[{"lat":40.544232,"lon":-76.385752}],"costing":"auto"})");
+       }},
+      {"trace_attributes",
+       [&] {
+         actor.trace_attributes(R"({"shape":[{"lat":40.546115,"lon":-76.385076},
+             {"lat":40.544232,"lon":-76.385752}],"costing":"auto","shape_match":"map_snap"})");
+       }},
+  };
+  for (const auto& [name, call] : actions) {
+    try {
+      call();
+      ADD_FAILURE() << name << " did not throw";
+    } catch (const valhalla_exception_t& e) { EXPECT_EQ(e.code, 446) << name; }
+    actor.cleanup();
+  }
 }
 
 TEST(Actor, Tile) {
