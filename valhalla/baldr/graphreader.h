@@ -907,6 +907,14 @@ public:
   std::unordered_set<GraphId> GetTileSet(const uint8_t level) const;
 
   /**
+   * Whether the remote tileset's index.bin was loaded, i.e. GetTileSet() lists the whole remote
+   * tileset rather than just the tiles already cached in tile_dir.
+   */
+  bool HasRemoteTileIndex() const {
+    return !remote_tile_index_.empty();
+  }
+
+  /**
    * Returns the tile directory.
    * @return  Returns the tile directory.
    */
@@ -1001,16 +1009,21 @@ protected:
   // tileset build id recorded in id.txt; unset until the first downloaded tile establishes it
   const std::optional<uint64_t> url_id_txt_checksum_;
 
-  // for remote tar's we grab the index.bin when loading the remote_tar_offsets
-  // so we know all tiles' offset & size
+  // the remote tileset's index.bin, which lists every tile; for a tar it also carries each
+  // tile's offset & size, a plain tile URL only needs the ids
   struct remote_tile_position_t {
     uint64_t offset;
     uint64_t size;
   };
-  using remote_tar_offsets_t = std::unordered_map<GraphId, remote_tile_position_t>;
-  remote_tar_offsets_t remote_tar_offsets_;
-  // loads the remote index.bin into remote_tar_offsets_
+  using remote_tile_index_t = std::unordered_map<GraphId, remote_tile_position_t>;
+  remote_tile_index_t remote_tile_index_;
+  // reads index.bin's entries into remote_tile_index_, leaving it untouched and returning false
+  // unless the bytes are whole entries of valid tile ids
+  bool parse_remote_tile_index(const tile_getter_t::bytes_t& bytes);
+  // range requests index.bin out of the remote tar, throwing if it isn't there
   void load_remote_tar_offsets();
+  // gets an optional index.bin sitting next to the remote tiles
+  void load_remote_tile_index();
 
   std::mutex _404s_lock;
   std::unordered_set<GraphId> _404s;
