@@ -476,7 +476,7 @@ help_text = {
         "use_simple_mem_cache": "Use memory cache within a simple hash map the clears all tiles when overcommitted",
         "user_agent": "User-Agent http header to request single tiles",
         "tile_url": "Http location to read tiles from if they are not found in the tile_dir, e.g.: http://your_valhalla_tile_server_host:8000/some/Optional/path/{tilePath}?some=Optional&query=params. Valhalla will look for the {tilePath} portion of the url and fill this out with a given tile path when it make a request for that tile",
-        "tile_url_gz": "Whether or not to request for compressed tiles",
+        "tile_url_gz": "Whether or not to request compressed tiles, which the server must also store gzipped, e.g. a tar built with valhalla_build_extract --gzip",
         "tile_url_user_pw": 'User & password for HTTP basic auth in the form of "user:password"',
         "concurrency": "How many threads to use in the concurrent parts of tile building",
         "data_quality_dir": "The directory where we output files regarding data quality issues, e.g. duplicateways.txt",

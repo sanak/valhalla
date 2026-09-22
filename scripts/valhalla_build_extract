@@ -3,6 +3,7 @@
 import argparse
 from collections import namedtuple, defaultdict
 import ctypes
+import gzip
 from io import BytesIO
 import json
 from math import floor
@@ -86,9 +87,10 @@ class TileResolver:
         if self._tar_obj:
             self._tar_obj.close()
 
-    def add_to_tar(self, tar: tarfile.TarFile):
+    def add_to_tar(self, tar: tarfile.TarFile, gzip_tiles: bool = False):
         """
-        Adds the self.matched_paths to the passed tar file.
+        Adds the self.matched_paths to the passed tar file, gzipping each tile to a .gph.gz member
+        if asked to.
         """
         # deduplicate the list (geojson variant might've added dups)
         # since 3.7 python dicts are insertion-ordered, so order is preserved
@@ -96,7 +98,15 @@ class TileResolver:
             LOGGER.debug(f"Adding tile {t} to the tar file")
             # Normalize path to use forward slashes, fixes issues when running on Windows
             normalized_path = str(t).replace("\\", "/")
-            if self._is_tar:
+            if gzip_tiles:
+                if self._is_tar:
+                    tile = self._tar_obj.extractfile(normalized_path).read()
+                else:
+                    tile = self.path.joinpath(normalized_path).read_bytes()
+                # mtime=0 keeps the output reproducible
+                compressed = gzip.compress(tile, compresslevel=9, mtime=0)
+                tar.addfile(get_tar_info(normalized_path + ".gz", len(compressed)), BytesIO(compressed))
+            elif self._is_tar:
                 tar_member = self._tar_obj.getmember(normalized_path)
                 tar.addfile(tar_member, self._tar_obj.extractfile(tar_member.name))
             else:
@@ -128,6 +138,13 @@ parser.add_argument(
     default="",
 )
 parser.add_argument("-O", "--overwrite", help="Overwrites an output tar file", action="store_true")
+parser.add_argument(
+    "-z",
+    "--gzip",
+    help="Store each tile gzipped as .gph.gz, for serving the tar at 'mjolnir.tile_url' with "
+    "'mjolnir.tile_url_gz' set. Such a tar can't be used as a local 'mjolnir.tile_extract'.",
+    action="store_true",
+)
 parser.add_argument(
     "-t",
     "--with-traffic",
@@ -350,7 +367,7 @@ def get_tiles_with_bbox(tile_resolver_: TileResolver, bbox_str: str):
 
 def get_tile_level_id(path: str) -> List[str]:
     """Returns both level and tile ID"""
-    return path[:-4].replace("\\", "/").split("/", 1)
+    return path.split(".", 1)[0].replace("\\", "/").split("/", 1)
 
 
 def get_tile_id(path: str) -> int:
@@ -376,7 +393,7 @@ def write_index_to_tar(tar_fp_: Path):
     index: List[Tuple[int, int, int]] = list()
     with tarfile.open(tar_fp_, "r|") as tar:
         for member in tar.getmembers():
-            if member.name.endswith(".gph"):
+            if member.name.endswith((".gph", ".gph.gz")):
                 LOGGER.debug(
                     f"Tile {member.name} with offset: {member.offset_data}, size: {member.size}"
                 )
@@ -391,11 +408,21 @@ def write_index_to_tar(tar_fp_: Path):
             tar.write(struct.pack(INDEX_BIN_FORMAT, *entry))
 
 
-def create_extracts(config_: dict, do_traffic: bool, tile_resolver_: TileResolver, extract_fp: Path):
+def create_extracts(
+    config_: dict,
+    do_traffic: bool,
+    tile_resolver_: TileResolver,
+    extract_fp: Path,
+    gzip_tiles: bool = False,
+):
     """Actually creates the tar ball. Break out of main function for testability."""
     tiles_count = len(tile_resolver_.matched_paths)
     if not tiles_count:
         LOGGER.critical(f"Couldn't find usable tiles in {tile_resolver_.path}")
+        sys.exit(1)
+    # traffic.tar is mmap'd next to a local tile_extract, which a gzipped tar can't be
+    if gzip_tiles and do_traffic:
+        LOGGER.critical("--gzip can't be combined with --with-traffic")
         sys.exit(1)
 
     # write the in-memory index file
@@ -408,7 +435,7 @@ def create_extracts(config_: dict, do_traffic: bool, tile_resolver_: TileResolve
     extract_fp.parent.mkdir(parents=True, exist_ok=True)
     with tarfile.open(extract_fp, "w") as tar:
         tar.addfile(get_tar_info(INDEX_FILE, index_size), index_fd)
-        tile_resolver_.add_to_tar(tar)
+        tile_resolver_.add_to_tar(tar, gzip_tiles)
 
     write_index_to_tar(extract_fp)
 
@@ -547,7 +574,7 @@ def main():
     else:
         tile_resolver.matched_paths = tile_resolver.normalized_tile_paths
 
-    create_extracts(config, args.with_traffic, tile_resolver, tiles_extract_out)
+    create_extracts(config, args.with_traffic, tile_resolver, tiles_extract_out, args.gzip)
 
 
 if __name__ == "__main__":

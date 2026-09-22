@@ -2,7 +2,9 @@
 
 #include <zlib.h>
 
+#include <cstdint>
 #include <functional>
+#include <vector>
 
 namespace valhalla {
 namespace baldr {
@@ -26,6 +28,15 @@ bool deflate(const std::function<int(z_stream&)>& src_func,
  */
 bool inflate(const std::function<void(z_stream&)>& src_func,
              const std::function<int(z_stream&)>& dst_func);
+
+/* Whether the data carries the gzip magic bytes
+ * @param bytes  the data to sniff
+ * @return       true if the data starts with 1f 8b
+ */
+inline bool is_gzipped(const std::vector<char>& bytes) {
+  return bytes.size() > 1 && static_cast<uint8_t>(bytes[0]) == 0x1f &&
+         static_cast<uint8_t>(bytes[1]) == 0x8b;
+}
 
 } // namespace baldr
 } // namespace valhalla

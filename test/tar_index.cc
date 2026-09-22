@@ -1,10 +1,13 @@
 #include "baldr/graphreader.h"
+#include "baldr/tilegetter.h"
 #include "test.h"
 
 #include <boost/property_tree/ptree.hpp>
 
 #include <filesystem>
 #include <fstream>
+#include <memory>
+#include <string>
 
 namespace vb = valhalla::baldr;
 
@@ -77,4 +80,76 @@ TEST(TarIndexer, CheckScanTar) {
   TestGraphReader reader_tar(config_tar.get_child("mjolnir"));
 
   ASSERT_NE(reader_tar.tile_extract_->checksum, 0);
+}
+
+// serves byte ranges of a local tar, standing in for a server that honours Range requests
+class file_range_getter_t : public vb::tile_getter_t {
+public:
+  explicit file_range_getter_t(std::string path, bool gzipped = false)
+      : path_(std::move(path)), gzipped_(gzipped) {
+  }
+  GET_response_t get(const std::string&, const uint64_t offset, const uint64_t size) override {
+    std::ifstream file(path_, std::ios::binary);
+    file.seekg(static_cast<std::streamoff>(offset));
+    GET_response_t response;
+    response.bytes_.resize(size);
+    file.read(response.bytes_.data(), static_cast<std::streamsize>(size));
+    response.bytes_.resize(static_cast<size_t>(file.gcount()));
+    response.status_ = status_code_t::SUCCESS;
+    response.http_code_ = 206;
+    return response;
+  }
+  HEAD_response_t head(const std::string&, header_mask_t) override {
+    return {};
+  }
+  bool gzipped() const override {
+    return gzipped_;
+  }
+
+private:
+  std::string path_;
+  bool gzipped_;
+};
+
+TEST(TarIndexer, RemoteTarTileSetMatchesExtract) {
+  auto remote = config_tar.get_child("mjolnir");
+  remote.erase("tile_extract");
+  remote.put("tile_dir", "");
+  remote.put("tile_url", "http://localhost/tiles.tar");
+  vb::GraphReader reader_remote(remote, std::make_unique<file_range_getter_t>(
+                                            "test/data/utrecht_tiles/tiles.tar"));
+  vb::GraphReader reader_tar(config_tar.get_child("mjolnir"));
+
+  const auto expected = reader_tar.GetTileSet();
+  ASSERT_FALSE(expected.empty());
+  EXPECT_EQ(reader_remote.GetTileSet(), expected);
+  for (uint8_t level = 0; level <= 2; ++level) {
+    EXPECT_EQ(reader_remote.GetTileSet(level), reader_tar.GetTileSet(level)) << int(level);
+  }
+}
+
+const std::string kGzTar = "test/data/utrecht_tiles/tiles_gz.tar";
+
+TEST(TarIndexer, GzippedExtractIsNotMapped) {
+  auto config = test::make_config("test/data/utrecht_tiles", {{"mjolnir.tile_extract", kGzTar}});
+  TestGraphReader reader(config.get_child("mjolnir"));
+
+  EXPECT_TRUE(reader.tile_extract_->tiles.empty());
+}
+
+TEST(TarIndexer, RemoteGzippedTarMatchesTileDir) {
+  boost::property_tree::ptree pt;
+  pt.put("tile_url", "http://localhost/tiles_gz.tar");
+  vb::GraphReader reader_gz(pt, std::make_unique<file_range_getter_t>(kGzTar, true));
+  vb::GraphReader reader_dir(config_dir.get_child("mjolnir"));
+
+  ASSERT_TRUE(reader_gz.HasRemoteTileIndex());
+  EXPECT_EQ(reader_gz.GetTileSet(), reader_dir.GetTileSet());
+  for (const auto& tile_id : reader_dir.GetTileSet()) {
+    auto dir_tile = reader_dir.GetGraphTile(tile_id);
+    auto gz_tile = reader_gz.GetGraphTile(tile_id);
+    ASSERT_TRUE(gz_tile) << tile_id;
+    EXPECT_EQ(dir_tile->header()->end_offset(), gz_tile->header()->end_offset());
+    EXPECT_EQ(memcmp(dir_tile->header(), gz_tile->header(), sizeof(vb::GraphTileHeader)), 0);
+  }
 }
