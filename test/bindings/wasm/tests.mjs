@@ -118,6 +118,23 @@ assert.throws(
   (e) => e.name === 'ValhallaError' && /HTTP status 404/.test(e.message),
   'a 404 on an indexed tile must reject, not return a detour',
 );
+
+// every action that correlates locations has to surface the tile failure, not loki's 171
+const LOCATIONS = [
+  { lat: 47.141, lon: 9.521 },
+  { lat: 47.165, lon: 9.51 },
+];
+const brokenRequests = {
+  isochrone: { locations: [LOCATIONS[0]], costing: 'auto', contours: [{ time: 5 }] },
+  matrix: { sources: [LOCATIONS[0]], targets: [LOCATIONS[1]], costing: 'auto' },
+};
+for (const [action, request] of Object.entries(brokenRequests)) {
+  assert.throws(
+    () => brokenActor[action](JSON.stringify(request)),
+    (e) => e.name === 'ValhallaError' && /HTTP status 404/.test(e.message),
+    `${action} swallowed the tile failure instead of reporting it`,
+  );
+}
 brokenActor.delete();
 console.log('404 on an indexed tile fails loudly');
 
