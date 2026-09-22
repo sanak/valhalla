@@ -1053,6 +1053,24 @@ TEST_F(RemoteTileIndex, LoadedIndexBinIsReported) {
   EXPECT_TRUE(reader.HasRemoteTileIndex());
 }
 
+class throwing_tile_getter_t : public tile_getter_t {
+public:
+  GET_response_t get(const std::string&, const uint64_t, const uint64_t) override {
+    throw std::runtime_error("connection refused");
+  }
+  HEAD_response_t head(const std::string&, header_mask_t) override {
+    return {};
+  }
+};
+
+TEST_F(RemoteTileIndex, UnreachableIndexBinDoesNotAbortConstruction) {
+  std::unique_ptr<GraphReader> reader;
+  EXPECT_NO_THROW(reader = std::make_unique<GraphReader>(per_tile_conf(),
+                                                         std::make_unique<throwing_tile_getter_t>()));
+  ASSERT_TRUE(reader);
+  EXPECT_FALSE(reader->HasRemoteTileIndex());
+}
+
 const std::string kTarUrl = "http://localhost/tiles.tar";
 
 boost::property_tree::ptree tar_conf() {

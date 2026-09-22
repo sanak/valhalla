@@ -553,7 +553,12 @@ GraphReader::GraphReader(const boost::property_tree::ptree& pt,
     if (is_tar_url_) {
       load_remote_tar_offsets();
     } else {
-      load_remote_tile_index();
+      // the index is optional, so an unreachable host must not keep the reader from starting
+      try {
+        load_remote_tile_index();
+      } catch (const std::exception& e) {
+        LOG_WARN("Could not fetch index.bin for " + tile_url_ + ": " + e.what());
+      }
     }
     // we allow to not cache tiles locally from URL
     if (!tile_dir_.empty()) {
