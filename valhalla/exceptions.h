@@ -38,6 +38,10 @@ struct valhalla_exception_t : public std::runtime_error {
   std::string statsd_key;
 };
 
+// thrown by a caller-supplied interrupt functor to abandon a request. Not a std::exception so
+// graceful-degradation handlers can't mistake an abort for a failure; catch(...) sites rethrow it
+struct interrupt_exception_t {};
+
 /**
  * Adds a warning to the request PBF object.
  *

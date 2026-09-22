@@ -200,7 +200,7 @@ std::string thor_worker_t::expansion(Api& request) {
     } else if (exp_action == Options::sources_to_targets) {
       matrix(request);
     }
-  } catch (...) {
+  } catch (const interrupt_exception_t&) { throw; } catch (...) {
     // we swallow exceptions because we actually want to see what the heck the expansion did
     // anyway
   }

@@ -76,7 +76,7 @@ void thor_worker_t::trace_route(Api& request) {
     case ShapeMatch::edge_walk:
       try {
         route_match(request);
-      } catch (...) {
+      } catch (const interrupt_exception_t&) { throw; } catch (...) {
         throw valhalla_exception_t{
             443, ShapeMatch_Enum_Name(options.shape_match()) +
                      " algorithm failed to find exact route match.  Try using "
@@ -91,6 +91,8 @@ void thor_worker_t::trace_route(Api& request) {
         map_match(request);
       } catch (const valhalla_exception_t& e) {
         throw e;
+      } catch (const interrupt_exception_t&) {
+        throw;
       } catch (...) {
         throw valhalla_exception_t{442};
       }
@@ -104,6 +106,8 @@ void thor_worker_t::trace_route(Api& request) {
     case ShapeMatch::walk_or_snap:
       try {
         route_match(request);
+      } catch (const interrupt_exception_t&) {
+        throw;
       } catch (...) {
         LOG_WARN(ShapeMatch_Enum_Name(options.shape_match()) +
                  " algorithm failed to find exact route match; Falling back to map_match...");
@@ -115,6 +119,8 @@ void thor_worker_t::trace_route(Api& request) {
           map_match(request);
         } catch (const valhalla_exception_t& e) {
           throw e;
+        } catch (const interrupt_exception_t&) {
+          throw;
         } catch (...) {
           throw valhalla_exception_t{442};
         }
