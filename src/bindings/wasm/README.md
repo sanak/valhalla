@@ -91,12 +91,14 @@ Each of these cost a build cycle:
   where `libboost-dev` puts the headers — lets emscripten's libc++ pick up glibc's `stdint.h` and
   the build dies on `bits/libc-header-start.h`. `env.sh` symlinks `boost/` into
   `build-wasm/boost-include` and points at that.
-- **`loki.use_connectivity` must be off for per-tile URLs.** The connectivity map only needs the
-  list of tiles, and a remote tar carries one in `index.bin`, so `GetTileSet()` reads it and tar mode
-  keeps connectivity. A `{tilePath}` URL has no index and nothing is on disk on a first run, so the
-  map comes out empty and loki rejects every route with a 170 — the `Actor` constructor in
-  `src/valhalla_wasm.cc` forces it off for that case only; `valhalla_build_config` always emits it
-  as `true`.
+- **`loki.use_connectivity` needs a tileset listing.** The connectivity map only needs the list of
+  tiles, which `GetTileSet()` takes from `index.bin`: a remote tar carries one, and a `{tilePath}`
+  URL gets one when `index.bin` is published next to the tiles. Without it `GetTileSet()` falls
+  back to whatever `tile_dir` has cached, and loki rejects every route leaving that area with a
+  170, so the `Actor` constructor in `src/valhalla_wasm.cc` forces it off unless
+  `HasRemoteTileIndex()`; `valhalla_build_config` always emits it as `true`. Serve that
+  `index.bin` uncompressed — the reader parses its bytes directly and ignores anything that is not
+  whole, valid index entries.
 - **Throw `valhalla_exception_t` from a tile getter, never a bare `std::exception`.** Loki
   turns the latter into a 171 and the real cause is lost. The catch sites in `src/loki/*_action.cc`
   rethrow `valhalla_exception_t` unchanged so this holds for every action, not just `/route`.
